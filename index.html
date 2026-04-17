@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0D0F14" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FollowPro" />
+  <meta name="description" content="Smart Follow-up Manager for Sales Professionals" />
+
+  <title>FollowPro — Smart Follow-up Manager</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Apple Touch Icons (generated from emoji fallback) -->
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #0D0F14; color: #E8EAF0; }
+    #root { height: 100%; }
+    /* iOS safe area padding */
+    body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+    /* Splash screen */
+    #splash {
+      position: fixed; inset: 0; background: #0D0F14;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 9999; transition: opacity 0.4s ease;
+    }
+    #splash.hide { opacity: 0; pointer-events: none; }
+    #splash .logo { font-size: 56px; margin-bottom: 16px; animation: pulse 1.5s infinite; }
+    #splash .name { font-family: 'Syne', sans-serif; font-size: 32px; font-weight: 800; color: #4F8EF7; }
+    #splash .tagline { font-size: 13px; color: #6B7280; margin-top: 8px; }
+    #splash .bar { width: 120px; height: 3px; background: #252A3A; border-radius: 2px; margin-top: 32px; overflow: hidden; }
+    #splash .bar-fill { height: 100%; background: #4F8EF7; border-radius: 2px; animation: load 1.5s ease forwards; }
+    @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
+    @keyframes load { from{width:0} to{width:100%} }
+  </style>
+</head>
+<body>
+
+  <!-- Splash Screen -->
+  <div id="splash">
+    <div class="logo">📋</div>
+    <div class="name">FollowPro</div>
+    <div class="tagline">Smart Follow-up Manager</div>
+    <div class="bar"><div class="bar-fill"></div></div>
+  </div>
+
+  <div id="root"></div>
+
+  <!-- React + Babel via CDN — no build step needed -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // ─── Constants ───────────────────────────────────────────────────────
+    const COLORS = {
+      bg: "#0D0F14", surface: "#161920", card: "#1C2030", border: "#252A3A",
+      accent: "#4F8EF7", accentGlow: "#4F8EF740", green: "#2ECC71",
+      orange: "#F39C12", red: "#E74C3C", text: "#E8EAF0", muted: "#6B7280",
+      whatsapp: "#25D366",
+    };
+
+    const DEFAULT_SETTINGS = {
+      interestedOptions: ["Plot", "Insurance", "Apartment", "Villa", "Commercial", "Farmhouse"],
+    };
+
+    const SAMPLE_CONTACTS = [
+      { id: 1, name: "Rajesh Kumar",  phone: "9876543210", lastCalled: new Date(Date.now()-2*86400000).toISOString().split("T")[0] },
+      { id: 2, name: "Priya Sharma",  phone: "9823456789", lastCalled: new Date(Date.now()-3*86400000).toISOString().split("T")[0] },
+      { id: 3, name: "Amit Singh",    phone: "9712345678", lastCalled: new Date(Date.now()-4*86400000).toISOString().split("T")[0] },
+      { id: 4, name: "Sunita Patel",  phone: "9634567890", lastCalled: new Date(Date.now()-5*86400000).toISOString().split("T")[0] },
+      { id: 5, name: "Vikram Nair",   phone: "9545678901", lastCalled: new Date(Date.now()-7*86400000).toISOString().split("T")[0] },
+    ];
+
+    const VIEWS = { SCHEDULE: "schedule", CALENDAR: "calendar", SETTINGS: "settings" };
+
+    // ─── Helpers ─────────────────────────────────────────────────────────
+    const formatDate = (d) => { if (!d) return ""; return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }); };
+    const formatTime = (t) => { if (!t) return ""; const [h,m] = t.split(":"); const hr=parseInt(h); return `${hr%12||12}:${m} ${hr>=12?"PM":"AM"}`; };
+    const daysInMonth  = (y,m) => new Date(y,m+1,0).getDate();
+    const firstDayOfMonth = (y,m) => new Date(y,m,1).getDay();
+    const toDateStr = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+
+    // ─── Storage helpers ─────────────────────────────────────────────────
+    const load = (key, fallback) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
+    const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
+    // ═══════════════════════════════════════════════════════════════════
+    // APP ROOT
+    // ═══════════════════════════════════════════════════════════════════
+    function App() {
+      const [view, setView]           = useState(VIEWS.SCHEDULE);
+      const [followups, setFollowups] = useState(() => load("fp_followups", []));
+      const [settings, setSettings]   = useState(() => load("fp_settings", DEFAULT_SETTINGS));
+      const [showForm, setShowForm]   = useState(false);
+      const [calMonth, setCalMonth]   = useState(new Date().getMonth());
+      const [calYear, setCalYear]     = useState(new Date().getFullYear());
+      const [selectedFU, setSelectedFU] = useState(null);
+      const [rescheduleId, setRescheduleId] = useState(null);
+      const [toast, setToast]         = useState(null);
+      const [newOption, setNewOption] = useState("");
+
+      // Persist to localStorage
+      useEffect(() => save("fp_followups", followups), [followups]);
+      useEffect(() => save("fp_settings",  settings),  [settings]);
+
+      const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
+
+      const handleSave = (data) => {
+        if (rescheduleId) {
+          setFollowups(p => p.map(f => f.id===rescheduleId ? {...f,...data,done:false,rescheduled:true} : f));
+          showToast("Rescheduled ✓"); setRescheduleId(null);
+        } else {
+          setFollowups(p => [...p, {...data, id:Date.now(), done:false, createdAt:new Date().toISOString()}]);
+          showToast("Follow-up scheduled! 🎯");
+        }
+        setShowForm(false);
+      };
+
+      const markDone = (id) => { setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Marked done ✓"); };
+      const markDoneAndReschedule = (fu) => { setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f)); setSelectedFU(null); setRescheduleId(fu.id); setShowForm(true); };
+      const deleteFollowup = (id) => { setFollowups(p=>p.filter(f=>f.id!==id)); setSelectedFU(null); showToast("Deleted","error"); };
+
+      const today = new Date().toISOString().split("T")[0];
+      const overdueCount  = followups.filter(f=>!f.done&&f.scheduleDate<today).length;
+      const todayCount    = followups.filter(f=>!f.done&&f.scheduleDate===today).length;
+      const upcomingCount = followups.filter(f=>!f.done&&f.scheduleDate>today).length;
+      const doneCount     = followups.filter(f=>f.done).length;
+
+      const fuForDate = (dateStr) => followups.filter(f=>f.scheduleDate===dateStr&&!f.done);
+
+      return (
+        <div style={{minHeight:"100vh",background:COLORS.bg,color:COLORS.text,fontFamily:"'DM Sans','Segoe UI',sans-serif",position:"relative",maxWidth:520,margin:"0 auto"}}>
+          <GlobalStyles />
+
+          {/* Header */}
+          <div style={{background:COLORS.surface,borderBottom:`1px solid ${COLORS.border}`,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50}}>
+            <div>
+              <div style={{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:800,letterSpacing:"-0.5px"}}>FollowPro</div>
+              <div style={{fontSize:10,color:COLORS.muted,marginTop:1}}>Smart Follow-up Manager</div>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              {[{v:VIEWS.SCHEDULE,icon:"📋",label:"Schedule"},{v:VIEWS.CALENDAR,icon:"📅",label:"Calendar"},{v:VIEWS.SETTINGS,icon:"⚙️",label:"Settings"}].map(({v,icon,label})=>(
+                <button key={v} onClick={()=>setView(v)} style={{background:view===v?COLORS.accent:"transparent",color:view===v?"#fff":COLORS.muted,border:`1px solid ${view===v?COLORS.accent:COLORS.border}`,borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:600,display:"flex",alignItems:"center",gap:3,transition:"all 0.2s"}}>
+                  <span>{icon}</span><span style={{display:"none"}}>{label}</span><span style={{fontSize:10}}>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Stats Bar */}
+          {view!==VIEWS.SETTINGS&&(
+            <div style={{display:"flex",gap:8,padding:"12px 14px",overflowX:"auto"}}>
+              {[{l:"Overdue",n:overdueCount,c:COLORS.red,i:"🔥"},{l:"Today",n:todayCount,c:COLORS.orange,i:"⏰"},{l:"Upcoming",n:upcomingCount,c:COLORS.green,i:"📆"},{l:"Done",n:doneCount,c:COLORS.accent,i:"✅"}].map(({l,n,c,i})=>(
+                <div key={l} className="hover-lift" style={{flex:1,minWidth:72,background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:12,padding:"8px 6px",textAlign:"center"}}>
+                  <div style={{fontSize:16}}>{i}</div>
+                  <div style={{fontSize:20,fontWeight:700,color:c,fontFamily:"'Syne',sans-serif"}}>{n}</div>
+                  <div style={{fontSize:9,color:COLORS.muted,marginTop:1}}>{l}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Main */}
+          <div style={{padding:"0 14px 110px"}}>
+            {view===VIEWS.SCHEDULE&&<ScheduleView followups={followups} today={today} onSelect={setSelectedFU} settings={settings}/>}
+            {view===VIEWS.CALENDAR&&<CalendarView followups={followups} calMonth={calMonth} calYear={calYear} setCalMonth={setCalMonth} setCalYear={setCalYear} today={today}
+              onDateClick={(ds)=>{ const fus=fuForDate(ds); if(fus.length===1)setSelectedFU(fus[0]); else if(fus.length>1)setSelectedFU({multi:fus}); }}/>}
+            {view===VIEWS.SETTINGS&&<SettingsView settings={settings} setSettings={setSettings} newOption={newOption} setNewOption={setNewOption} showToast={showToast} followups={followups}/>}
+          </div>
+
+          {/* FAB */}
+          {view!==VIEWS.SETTINGS&&(
+            <button onClick={()=>{setRescheduleId(null);setShowForm(true);}} className="glow" style={{position:"fixed",bottom:28,right:20,width:56,height:56,borderRadius:"50%",background:COLORS.accent,color:"#fff",fontSize:28,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 24px ${COLORS.accentGlow}`,zIndex:100}}>+</button>
+          )}
+
+          {/* Modals */}
+          {showForm&&<FollowupForm settings={settings} contacts={SAMPLE_CONTACTS} onSave={handleSave} onClose={()=>{setShowForm(false);setRescheduleId(null);}} reschedule={!!rescheduleId}/>}
+          {selectedFU&&!selectedFU.multi&&<FollowupDetail followup={selectedFU} onClose={()=>setSelectedFU(null)} onMarkDone={()=>markDone(selectedFU.id)} onReschedule={()=>markDoneAndReschedule(selectedFU)} onDelete={()=>deleteFollowup(selectedFU.id)}/>}
+          {selectedFU?.multi&&<MultiModal followups={selectedFU.multi} onClose={()=>setSelectedFU(null)} onSelect={f=>setSelectedFU(f)}/>}
+
+          {/* Toast */}
+          {toast&&<div className="animate-in" style={{position:"fixed",bottom:96,left:"50%",transform:"translateX(-50%)",background:toast.type==="success"?COLORS.green:COLORS.red,color:"#fff",borderRadius:12,padding:"10px 20px",fontSize:13,fontWeight:600,zIndex:999,whiteSpace:"nowrap",boxShadow:"0 4px 20px rgba(0,0,0,0.4)"}}>{toast.msg}</div>}
+        </div>
+      );
+    }
+
+    // ─── Global Styles ───────────────────────────────────────────────────
+    function GlobalStyles() {
+      return <style>{`
+        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#0D0F14}::-webkit-scrollbar-thumb{background:#252A3A;border-radius:2px}
+        input,select,textarea{outline:none;-webkit-appearance:none}
+        button{cursor:pointer;border:none;-webkit-tap-highlight-color:transparent}
+        a{-webkit-tap-highlight-color:transparent}
+        .glow{box-shadow:0 0 20px #4F8EF740}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slideUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+        .animate-in{animation:fadeIn 0.3s ease}
+        .slide-up{animation:slideUp 0.35s cubic-bezier(0.16,1,0.3,1)}
+        .hover-lift:active{transform:scale(0.97);transition:transform 0.1s}
+        input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:0.5}
+        input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:0.5}
+        select option{background:#1C2030;color:#E8EAF0}
+      `}</style>;
+    }
+
+    // ─── Schedule View ────────────────────────────────────────────────────
+    function ScheduleView({followups,today,onSelect,settings}) {
+      const [filter,setFilter]=useState("all");
+      const [search,setSearch]=useState("");
+      const filters=[{k:"all",l:"All Active"},{k:"today",l:"Today"},{k:"overdue",l:"🔥 Overdue"},{k:"upcoming",l:"Upcoming"},{k:"done",l:"Done"}];
+      let filtered=followups.filter(f=>{
+        if(filter==="done")return f.done;
+        if(filter==="today")return !f.done&&f.scheduleDate===today;
+        if(filter==="overdue")return !f.done&&f.scheduleDate<today;
+        if(filter==="upcoming")return !f.done&&f.scheduleDate>today;
+        return !f.done;
+      });
+      if(search) filtered=filtered.filter(f=>f.name.toLowerCase().includes(search.toLowerCase())||f.phone.includes(search)||(f.location||"").toLowerCase().includes(search.toLowerCase()));
+      filtered=filtered.sort((a,b)=>a.scheduleDate>b.scheduleDate?1:-1);
+      return (
+        <div>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search name, phone, location..." style={{...iStyle,marginBottom:10,marginTop:4}}/>
+          <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:8,marginBottom:12}}>
+            {filters.map(({k,l})=><button key={k} onClick={()=>setFilter(k)} style={{background:filter===k?COLORS.accent:COLORS.card,color:filter===k?"#fff":COLORS.muted,border:`1px solid ${filter===k?COLORS.accent:COLORS.border}`,borderRadius:20,padding:"5px 12px",fontSize:11,fontWeight:600,whiteSpace:"nowrap",transition:"all 0.2s"}}>{l}</button>)}
+          </div>
+          {filtered.length===0?(
+            <div style={{textAlign:"center",padding:"52px 20px",color:COLORS.muted}}>
+              <div style={{fontSize:40,marginBottom:12}}>📭</div>
+              <div style={{fontSize:15,fontWeight:600}}>No follow-ups here</div>
+              <div style={{fontSize:12,marginTop:6}}>Tap + to schedule one</div>
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {filtered.map(f=><FUCard key={f.id} fu={f} today={today} onClick={()=>onSelect(f)}/>)}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function FUCard({fu:f,today,onClick}) {
+      const isOverdue=!f.done&&f.scheduleDate<today;
+      const isToday=f.scheduleDate===today;
+      const bc=f.done?COLORS.border:isOverdue?COLORS.red:isToday?COLORS.orange:COLORS.accent;
+      return (
+        <div className="animate-in hover-lift" onClick={onClick} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,borderLeft:`3px solid ${bc}`,borderRadius:12,padding:"13px 14px",cursor:"pointer",opacity:f.done?0.55:1}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700,fontSize:15,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
+              <div style={{fontSize:11,color:COLORS.muted,marginTop:2}}>📱 {f.phone}</div>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0,marginLeft:8}}>
+              <span style={{fontSize:10,fontWeight:700,color:bc,background:`${bc}20`,borderRadius:6,padding:"2px 8px"}}>
+                {f.done?"Done ✓":isOverdue?"Overdue":isToday?"Today":formatDate(f.scheduleDate)}
+              </span>
+              {f.scheduleTime&&<div style={{fontSize:10,color:COLORS.muted,marginTop:3}}>⏰ {formatTime(f.scheduleTime)}</div>}
+              {f.priority&&<div style={{fontSize:10,marginTop:2,color:f.priority==="High"?COLORS.red:f.priority==="Medium"?COLORS.orange:COLORS.green}}>● {f.priority}</div>}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+            {f.location&&<Tag i="📍" t={f.location}/>}
+            {f.interested&&<Tag i="🏷️" t={f.interested} c={COLORS.accent}/>}
+          </div>
+          {f.note&&<div style={{marginTop:8,fontSize:11,color:COLORS.muted,background:COLORS.surface,borderRadius:8,padding:"6px 10px",borderLeft:`2px solid ${COLORS.border}`}}>💬 {f.note.length>90?f.note.slice(0,90)+"…":f.note}</div>}
+        </div>
+      );
+    }
+
+    const Tag=({i,t,c})=><span style={{fontSize:10,color:c||COLORS.muted,background:COLORS.surface,borderRadius:6,padding:"2px 8px",display:"inline-flex",alignItems:"center",gap:3}}>{i} {t}</span>;
+
+    // ─── Calendar View ────────────────────────────────────────────────────
+    function CalendarView({followups,calMonth,calYear,setCalMonth,setCalYear,today,onDateClick}) {
+      const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+      const DAYS=["S","M","T","W","T","F","S"];
+      const days=daysInMonth(calYear,calMonth);
+      const firstDay=firstDayOfMonth(calYear,calMonth);
+      const getCount=d=>followups.filter(f=>f.scheduleDate===toDateStr(calYear,calMonth,d)&&!f.done).length;
+      const prevM=()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);};
+      const nextM=()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);};
+      return (
+        <div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <button onClick={prevM} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,color:COLORS.text,borderRadius:8,width:36,height:36,fontSize:18}}>‹</button>
+            <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:18}}>{MONTHS[calMonth]} {calYear}</div>
+            <button onClick={nextM} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,color:COLORS.text,borderRadius:8,width:36,height:36,fontSize:18}}>›</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4}}>
+            {DAYS.map((d,i)=><div key={i} style={{textAlign:"center",fontSize:11,fontWeight:700,color:COLORS.muted,padding:"4px 0"}}>{d}</div>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+            {Array(firstDay).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+            {Array(days).fill(null).map((_,i)=>{
+              const d=i+1;
+              const ds=toDateStr(calYear,calMonth,d);
+              const count=getCount(d);
+              const isToday=ds===today;
+              const isPast=ds<today;
+              return (
+                <div key={d} onClick={()=>count>0&&onDateClick(ds)} style={{background:isToday?COLORS.accent:count>0?`${COLORS.accent}18`:COLORS.card,border:`1px solid ${count>0?COLORS.accent:COLORS.border}`,borderRadius:10,padding:"7px 2px",textAlign:"center",minHeight:50,cursor:count>0?"pointer":"default",opacity:isPast&&!count?0.35:1,transition:"all 0.15s"}}>
+                  <div style={{fontSize:13,fontWeight:isToday?700:500,color:isToday?"#fff":COLORS.text}}>{d}</div>
+                  {count>0&&<div style={{display:"flex",justifyContent:"center",gap:2,marginTop:4,flexWrap:"wrap"}}>
+                    {Array(Math.min(count,3)).fill(null).map((_,ci)=><div key={ci} style={{width:5,height:5,borderRadius:"50%",background:isToday?"#fff":COLORS.orange}}/>)}
+                    {count>3&&<span style={{fontSize:8,color:isToday?"#fff":COLORS.orange}}>+{count-3}</span>}
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{marginTop:16,display:"flex",gap:16,justifyContent:"center"}}>
+            {[["●",COLORS.accent,"Has follow-ups"],["●",COLORS.orange,"Dot = scheduled"]].map(([dot,color,label])=>(
+              <span key={label} style={{fontSize:11,color:COLORS.muted,display:"flex",alignItems:"center",gap:4}}><span style={{color}}>{dot}</span>{label}</span>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Follow-up Detail Modal ───────────────────────────────────────────
+    function FollowupDetail({followup:f,onClose,onMarkDone,onReschedule,onDelete}) {
+      const [confirmDelete,setConfirmDelete]=useState(false);
+      return (
+        <Modal onClose={onClose} title="Follow-up Details">
+          <div style={{background:`linear-gradient(135deg,${COLORS.accent}18,${COLORS.surface})`,borderRadius:12,padding:"14px",marginBottom:14,border:`1px solid ${COLORS.accent}35`}}>
+            <div style={{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:800}}>{f.name}</div>
+            <div style={{fontSize:13,color:COLORS.muted,marginTop:3}}>📱 {f.phone}</div>
+            <div style={{display:"flex",gap:8,marginTop:12}}>
+              <a href={`tel:${f.phone}`} style={{flex:1,background:COLORS.accent,color:"#fff",borderRadius:10,padding:"10px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>📞 Call</a>
+              <a href={`https://wa.me/91${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`} target="_blank" rel="noreferrer" style={{flex:1,background:COLORS.whatsapp,color:"#fff",borderRadius:10,padding:"10px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>💬 WhatsApp</a>
+            </div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+            <DR i="📅" l="Scheduled" v={`${formatDate(f.scheduleDate)}${f.scheduleTime?" at "+formatTime(f.scheduleTime):""}`}/>
+            {f.lastCalled&&<DR i="🕐" l="Last Contacted" v={formatDate(f.lastCalled)}/>}
+            {f.location&&<DR i="📍" l="Location" v={f.location}/>}
+            {f.interested&&<DR i="🏷️" l="Interested In" v={f.interested} accent/>}
+            {f.priority&&<DR i="⚡" l="Priority" v={f.priority}/>}
+            {f.rescheduled&&<DR i="🔄" l="Status" v="Rescheduled"/>}
+          </div>
+          {f.note&&<div style={{background:COLORS.surface,borderRadius:10,padding:"12px",marginBottom:14,borderLeft:`3px solid ${COLORS.accent}`}}>
+            <div style={{fontSize:10,color:COLORS.muted,marginBottom:5,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px"}}>Follow-up Note</div>
+            <div style={{fontSize:13,lineHeight:1.65}}>{f.note}</div>
+          </div>}
+          {!f.done&&<div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <button onClick={onMarkDone} style={{...bStyle(COLORS.green)}}>✅ Mark Done</button>
+            <button onClick={onReschedule} style={{background:`${COLORS.orange}18`,color:COLORS.orange,border:`1px solid ${COLORS.orange}45`,borderRadius:10,padding:12,fontWeight:700,fontSize:13,width:"100%"}}>✅ Mark Done + Reschedule</button>
+          </div>}
+          <div style={{borderTop:`1px solid ${COLORS.border}`,marginTop:12,paddingTop:12}}>
+            {!confirmDelete
+              ?<button onClick={()=>setConfirmDelete(true)} style={{background:"transparent",color:COLORS.muted,fontSize:12,width:"100%",padding:"6px"}}>🗑️ Delete this follow-up</button>
+              :<div style={{display:"flex",gap:8}}>
+                <button onClick={()=>setConfirmDelete(false)} style={{...bStyle(COLORS.card),flex:1,border:`1px solid ${COLORS.border}`,color:COLORS.text,fontSize:12}}>Cancel</button>
+                <button onClick={onDelete} style={{...bStyle(COLORS.red),flex:1,fontSize:12}}>Confirm Delete</button>
+              </div>}
+          </div>
+        </Modal>
+      );
+    }
+
+    const DR=({i,l,v,accent})=>(
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:COLORS.card,borderRadius:8}}>
+        <span style={{fontSize:15}}>{i}</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:9,color:COLORS.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px"}}>{l}</div>
+          <div style={{fontSize:13,color:accent?COLORS.accent:COLORS.text,fontWeight:accent?600:500,marginTop:1}}>{v}</div>
+        </div>
+      </div>
+    );
+
+    function MultiModal({followups,onClose,onSelect}) {
+      return (
+        <Modal onClose={onClose} title={`${followups.length} Follow-ups this day`}>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {followups.map(f=>(
+              <div key={f.id} onClick={()=>onSelect(f)} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}>
+                <div style={{fontWeight:700}}>{f.name}</div>
+                <div style={{fontSize:11,color:COLORS.muted,marginTop:2}}>{f.phone}{f.interested?` · ${f.interested}`:""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      );
+    }
+
+    // ─── Follow-up Form ───────────────────────────────────────────────────
+    function FollowupForm({settings,contacts,onSave,onClose,reschedule}) {
+      const [step,setStep]=useState(reschedule?1:0);
+      const [form,setForm]=useState({name:"",phone:"",lastCalled:"",location:"",interested:"",note:"",scheduleDate:"",scheduleTime:"",priority:"Medium"});
+      const [search,setSearch]=useState("");
+      const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+      const filtered=contacts.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.phone.includes(search));
+      const selectContact=c=>{setForm(f=>({...f,name:c.name,phone:c.phone,lastCalled:c.lastCalled}));setStep(1);};
+      const handleSubmit=()=>{ if(!form.name||!form.phone||!form.scheduleDate)return; onSave(form); };
+      return (
+        <Modal onClose={onClose} title={reschedule?"Reschedule":step===0?"Select Contact":"Schedule Follow-up"}>
+          {step===0&&<div className="animate-in">
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search recent calls..." style={{...iStyle,marginBottom:10}}/>
+            <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:7}}>
+              {filtered.map(c=>(
+                <div key={c.id} onClick={()=>selectContact(c)} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:10,padding:"11px 13px",cursor:"pointer"}}>
+                  <div style={{fontWeight:600}}>{c.name}</div>
+                  <div style={{fontSize:11,color:COLORS.muted,marginTop:2}}>📱 {c.phone} · Last: {formatDate(c.lastCalled)}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{borderTop:`1px solid ${COLORS.border}`,marginTop:10,paddingTop:10}}>
+              <div style={{fontSize:11,color:COLORS.muted,marginBottom:7,fontWeight:700}}>OR ADD MANUALLY</div>
+              <div style={{display:"flex",gap:7}}>
+                <input placeholder="Full Name" value={form.name} onChange={e=>set("name",e.target.value)} style={{...iStyle,flex:1}}/>
+                <input placeholder="Phone" value={form.phone} onChange={e=>set("phone",e.target.value)} style={{...iStyle,flex:1}}/>
+              </div>
+              <button onClick={()=>setStep(1)} disabled={!form.name||!form.phone} style={{...bStyle(COLORS.accent),marginTop:9,opacity:(!form.name||!form.phone)?0.5:1}}>Continue →</button>
+            </div>
+          </div>}
+
+          {step===1&&<div className="animate-in">
+            <div style={{background:`${COLORS.accent}12`,border:`1px solid ${COLORS.accent}35`,borderRadius:10,padding:"9px 13px",marginBottom:13}}>
+              <div style={{fontWeight:700}}>{form.name}</div>
+              <div style={{fontSize:11,color:COLORS.muted}}>📱 {form.phone}</div>
+            </div>
+            <FS l="Date & Time">
+              <div style={{display:"flex",gap:7}}>
+                <input type="date" value={form.scheduleDate} onChange={e=>set("scheduleDate",e.target.value)} style={{...iStyle,flex:1}}/>
+                <input type="time" value={form.scheduleTime} onChange={e=>set("scheduleTime",e.target.value)} style={{...iStyle,flex:1}}/>
+              </div>
+            </FS>
+            <FS l="Location"><input placeholder="City, Area or Address" value={form.location} onChange={e=>set("location",e.target.value)} style={iStyle}/></FS>
+            <FS l="Interested In">
+              <select value={form.interested} onChange={e=>set("interested",e.target.value)} style={iStyle}>
+                <option value="">— Select Interest —</option>
+                {settings.interestedOptions.map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </FS>
+            <FS l="Priority">
+              <div style={{display:"flex",gap:7}}>
+                {["Low","Medium","High"].map(p=>(
+                  <button key={p} onClick={()=>set("priority",p)} style={{flex:1,borderRadius:8,padding:"8px",fontSize:12,fontWeight:600,background:form.priority===p?(p==="High"?COLORS.red:p==="Medium"?COLORS.orange:COLORS.green):COLORS.card,color:form.priority===p?"#fff":COLORS.muted,border:`1px solid ${form.priority===p?"transparent":COLORS.border}`,transition:"all 0.2s"}}>{p}</button>
+                ))}
+              </div>
+            </FS>
+            <FS l="Follow-up Note"><textarea placeholder="What to discuss, requirements, context..." value={form.note} onChange={e=>set("note",e.target.value)} rows={3} style={{...iStyle,resize:"none",lineHeight:1.5}}/></FS>
+            <div style={{display:"flex",gap:7,marginTop:4}}>
+              {!reschedule&&<button onClick={()=>setStep(0)} style={{background:COLORS.card,color:COLORS.text,border:`1px solid ${COLORS.border}`,borderRadius:10,padding:12,fontWeight:600,fontSize:13,flex:"0 0 80px"}}>← Back</button>}
+              <button onClick={handleSubmit} disabled={!form.scheduleDate} style={{...bStyle(COLORS.accent),flex:1,opacity:!form.scheduleDate?0.5:1}}>{reschedule?"🔄 Reschedule":"💾 Save & Schedule"}</button>
+            </div>
+          </div>}
+        </Modal>
+      );
+    }
+
+    const FS=({l,children})=><div style={{marginBottom:11}}><div style={{fontSize:10,color:COLORS.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:5}}>{l}</div>{children}</div>;
+
+    // ─── Settings View ────────────────────────────────────────────────────
+    function SettingsView({settings,setSettings,newOption,setNewOption,showToast,followups}) {
+      const addOpt=()=>{if(!newOption.trim())return;setSettings(s=>({...s,interestedOptions:[...s.interestedOptions,newOption.trim()]}));setNewOption("");showToast("Option added ✓");};
+      const removeOpt=o=>setSettings(s=>({...s,interestedOptions:s.interestedOptions.filter(x=>x!==o)}));
+      const exportData=()=>{
+        const blob=new Blob([JSON.stringify({followups,settings},null,2)],{type:"application/json"});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement("a");a.href=url;a.download="followpro-backup.json";a.click();URL.revokeObjectURL(url);
+        showToast("Data exported ✓");
+      };
+      return (
+        <div>
+          <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:18,marginBottom:14}}>Settings</div>
+          <Card title="Interested In — Dropdown Options" subtitle="Manage your product/service categories">
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:10}}>
+              {settings.interestedOptions.map(o=>(
+                <div key={o} style={{background:`${COLORS.accent}18`,border:`1px solid ${COLORS.accent}35`,borderRadius:20,padding:"4px 11px",fontSize:12,color:COLORS.accent,display:"flex",alignItems:"center",gap:6}}>
+                  {o}<button onClick={()=>removeOpt(o)} style={{background:"none",color:COLORS.muted,fontSize:15,lineHeight:1}}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:7}}>
+              <input value={newOption} onChange={e=>setNewOption(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addOpt()} placeholder="Add new option…" style={{...iStyle,flex:1}}/>
+              <button onClick={addOpt} style={{background:COLORS.accent,color:"#fff",borderRadius:9,padding:"9px 14px",fontWeight:700,fontSize:13}}>Add</button>
+            </div>
+          </Card>
+
+          <Card title="Data Management" subtitle="Backup your follow-ups">
+            <button onClick={exportData} style={{...bStyle(COLORS.card),border:`1px solid ${COLORS.border}`,color:COLORS.text,fontSize:13}}>📥 Export All Data (JSON)</button>
+          </Card>
+
+          <Card title="About FollowPro">
+            <div style={{fontSize:12,color:COLORS.muted,lineHeight:1.8}}>
+              📱 Smart follow-up scheduler for sales pros<br/>
+              📆 Intelligent calendar with visual highlights<br/>
+              ⚡ Priority-based task management<br/>
+              📞 One-tap Call & WhatsApp integration<br/>
+              🔄 Done + Reschedule workflow<br/>
+              💾 Data saved locally on your device<br/>
+              <br/>
+              <span style={{color:COLORS.accent,fontSize:11}}>v1.0 · FollowPro PWA</span>
+            </div>
+          </Card>
+        </div>
+      );
+    }
+
+    const Card=({title,subtitle,children})=>(
+      <div style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:subtitle?2:8}}>{title}</div>
+        {subtitle&&<div style={{fontSize:11,color:COLORS.muted,marginBottom:10}}>{subtitle}</div>}
+        {children}
+      </div>
+    );
+
+    // ─── Modal ────────────────────────────────────────────────────────────
+    function Modal({onClose,title,children}) {
+      useEffect(()=>{document.body.style.overflow="hidden";return()=>{document.body.style.overflow="";};},[]);
+      return (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.78)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+          <div className="slide-up" style={{background:COLORS.surface,borderRadius:"20px 20px 0 0",padding:"18px 16px",width:"100%",maxWidth:520,maxHeight:"92vh",overflowY:"auto",border:`1px solid ${COLORS.border}`}}>
+            <div style={{width:36,height:4,background:COLORS.border,borderRadius:2,margin:"0 auto 14px"}}/>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+              <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:16}}>{title}</div>
+              <button onClick={onClose} style={{background:COLORS.card,border:`1px solid ${COLORS.border}`,color:COLORS.muted,borderRadius:"50%",width:28,height:28,fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Shared styles ────────────────────────────────────────────────────
+    const iStyle={width:"100%",background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:10,padding:"10px 12px",color:COLORS.text,fontSize:13,fontFamily:"inherit"};
+    const bStyle=bg=>({background:bg,color:"#fff",borderRadius:10,padding:12,fontWeight:700,fontSize:14,width:"100%",transition:"all 0.2s"});
+
+    // ─── Mount ────────────────────────────────────────────────────────────
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+
+    // Hide splash after app mounts
+    setTimeout(()=>{ const s=document.getElementById("splash"); if(s){s.classList.add("hide");setTimeout(()=>s.remove(),400);} },1600);
+  </script>
+
+  <!-- Service Worker Registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.log('SW error:', err));
+      });
+    }
+  </script>
+</body>
+</html>
