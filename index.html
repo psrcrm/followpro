@@ -112,26 +112,19 @@
       return `${d.toLocaleDateString("en-IN",{day:"2-digit",month:"short"})} ${timeStr}`;
     };
 
-    const generateMockCallHistory = () => {
-      const now = Date.now();
-      return [
-        {id:"c1", name:"Rajesh Kumar",   phone:"9876543210", callTime:new Date(now-1*3600000).toISOString(),              duration:185, type:"incoming", location:"Banjara Hills"},
-        {id:"c2", name:"Priya Sharma",   phone:"9823456789", callTime:new Date(now-3*3600000).toISOString(),              duration:92,  type:"outgoing", location:"Jubilee Hills"},
-        {id:"c3", name:"Amit Singh",     phone:"9712345678", callTime:new Date(now-6*3600000).toISOString(),              duration:240, type:"outgoing", location:"Gachibowli"},
-        {id:"c4", name:"Sunita Patel",   phone:"9634567890", callTime:new Date(now-1*86400000).toISOString(),             duration:0,   type:"missed",   location:"Kondapur"},
-        {id:"c5", name:"Vikram Nair",    phone:"9545678901", callTime:new Date(now-1*86400000-2*3600000).toISOString(),   duration:310, type:"incoming", location:"HITEC City"},
-        {id:"c6", name:"Meena Reddy",    phone:"9456789012", callTime:new Date(now-2*86400000).toISOString(),             duration:0,   type:"missed",   location:"Madhapur"},
-        {id:"c7", name:"Suresh Iyer",    phone:"9367890123", callTime:new Date(now-2*86400000-4*3600000).toISOString(),   duration:128, type:"outgoing", location:"Kukatpally"},
-        {id:"c8", name:"Lakshmi Devi",   phone:"9278901234", callTime:new Date(now-3*86400000).toISOString(),             duration:55,  type:"incoming", location:"Miyapur"},
-        {id:"c9", name:"Kiran Rao",      phone:"9189012345", callTime:new Date(now-3*86400000-1*3600000).toISOString(),   duration:0,   type:"missed",   location:"Nizampet"},
-        {id:"c10",name:"Deepa Krishnan", phone:"9090123456", callTime:new Date(now-4*86400000).toISOString(),             duration:420, type:"outgoing", location:"Lingampally"},
-        {id:"c11",name:"Ravi Teja",      phone:"8901234567", callTime:new Date(now-4*86400000-3*3600000).toISOString(),   duration:88,  type:"incoming", location:"Kompally"},
-        {id:"c12",name:"Ananya Gupta",   phone:"8812345678", callTime:new Date(now-5*86400000).toISOString(),             duration:0,   type:"missed",   location:"Bowenpally"},
-        {id:"c13",name:"Sanjay Mehta",   phone:"8723456789", callTime:new Date(now-5*86400000-2*3600000).toISOString(),   duration:195, type:"outgoing", location:"Secunderabad"},
-        {id:"c14",name:"Kavya Nambiar",  phone:"8634567890", callTime:new Date(now-6*86400000).toISOString(),             duration:145, type:"incoming", location:"Alwal"},
-        {id:"c15",name:"Unknown",        phone:"9900112233", callTime:new Date(now-6*86400000-1*3600000).toISOString(),   duration:30,  type:"incoming", location:""},
-      ];
-    };
+    // ── Call log normalizer: accepts rows from CSV import or manual entry ──
+    const normalizeCallEntry = (raw, index) => ({
+      id: raw.id || `cl_${Date.now()}_${index}`,
+      name:     (raw.name || raw["Name"] || raw["Contact Name"] || "Unknown").trim(),
+      phone:    String(raw.phone || raw["Number"] || raw["Phone Number"] || raw["number"] || "").replace(/\D/g,"").slice(-10),
+      callTime: raw.callTime || raw["Date"] || raw["Call Date"] || new Date().toISOString(),
+      duration: parseInt(raw.duration || raw["Duration"] || raw["Duration(Sec)"] || 0, 10),
+      type:     ((raw.type || raw["Type"] || raw["Call Type"] || "incoming")).toLowerCase().includes("miss")
+                  ? "missed"
+                  : ((raw.type||raw["Type"]||raw["Call Type"]||"incoming")).toLowerCase().includes("out")
+                  ? "outgoing" : "incoming",
+      location: (raw.location || raw["Location"] || "").trim(),
+    });
 
     // ─── GLOBAL STYLES ───────────────────────────────────────────────────
     function GlobalStyles() {
@@ -164,13 +157,8 @@
       const [tab, setTab]             = useState("calls");
       const [followups, setFollowups] = useState(() => load("fp_followups", []));
       const [settings, setSettings]   = useState(() => load("fp_settings", DEFAULT_SETTINGS));
-      const [callHistory]             = useState(() => {
-        const stored = load("fp_callhistory", null);
-        if(stored) return stored;
-        const generated = generateMockCallHistory();
-        save("fp_callhistory", generated);
-        return generated;
-      });
+      const [callHistory, setCallHistory] = useState(() => load("fp_callhistory", []));
+      const [showImport, setShowImport]   = useState(false);
       const [showForm, setShowForm]       = useState(false);
       const [prefill, setPrefill]         = useState(null);
       const [selectedFU, setSelectedFU]   = useState(null);
@@ -179,6 +167,7 @@
 
       useEffect(() => save("fp_followups", followups), [followups]);
       useEffect(() => save("fp_settings",  settings),  [settings]);
+      useEffect(() => save("fp_callhistory", callHistory), [callHistory]);
 
       const showToast = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),2800); };
 
@@ -201,7 +190,22 @@
         setPrefill(null);
       };
 
-      const markDone = id => { setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
+      const importCalls = (newEntries, replace=false) => {
+        setCallHistory(prev => {
+          const base = replace ? [] : prev;
+          const existIds = new Set(base.map(c=>c.phone+"_"+c.callTime));
+          const fresh = newEntries.filter(c => !existIds.has(c.phone+"_"+c.callTime));
+          const merged = [...fresh, ...base].sort((a,b)=>new Date(b.callTime)-new Date(a.callTime));
+          return merged;
+        });
+        showToast(`${newEntries.length} calls imported ✓`);
+        setShowImport(false);
+      };
+
+      const clearCallHistory = () => {
+        setCallHistory([]);
+        showToast("Call history cleared","err");
+      }; setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
       const markDoneReschedule = fu => { setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f)); setSelectedFU(null); setRescheduleId(fu.id); setPrefill(null); setShowForm(true); };
       const deleteFU = id => { setFollowups(p=>p.filter(f=>f.id!==id)); setSelectedFU(null); showToast("Deleted","err"); };
 
@@ -248,10 +252,10 @@
 
           {/* ── Main content ── */}
           <div style={{flex:1,overflowY:"auto",paddingBottom:76}}>
-            {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall}/>}
+            {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall} onOpenImport={()=>setShowImport(true)}/>}
             {tab==="schedule" && <ScheduleView followups={followups} today={today} onSelect={setSelectedFU} counts={counts}/>}
             {tab==="calendar" && <CalendarView followups={followups} today={today} onSelectFU={setSelectedFU}/>}
-            {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} showToast={showToast}/>}
+            {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} callHistory={callHistory} showToast={showToast} onClearCalls={clearCallHistory} onOpenImport={()=>setShowImport(true)}/>}
           </div>
 
           {/* ── Tab Bar ── */}
@@ -291,7 +295,9 @@
             <MultiModal fus={selectedFU._multi} onClose={()=>setSelectedFU(null)} onPick={f=>setSelectedFU(f)}/>
           )}
 
-          {/* ── Toast ── */}
+          {showImport && (
+            <CallLogImportModal onClose={()=>setShowImport(false)} onImport={importCalls} showToast={showToast}/>
+          )}
           {toast && (
             <div className="anim-fade" style={{position:"fixed",bottom:88,left:"50%",transform:"translateX(-50%)",
               background:toast.type==="err"?C.red:C.green,color:"#fff",borderRadius:12,
@@ -307,7 +313,7 @@
     // ═══════════════════════════════════════════════════════════════════
     // CALLS VIEW  — THE CORE FEATURE
     // ═══════════════════════════════════════════════════════════════════
-    function CallsView({ callHistory, followups, onSchedule }) {
+    function CallsView({ callHistory, followups, onSchedule, onOpenImport }) {
       const [search, setSearch] = useState("");
       const [filter, setFilter] = useState("all");
 
@@ -338,15 +344,57 @@
 
       const FILTERS = [{k:"all",l:"All"},{k:"missed",l:"Missed"},{k:"incoming",l:"Incoming"},{k:"outgoing",l:"Outgoing"}];
 
+      // Empty state — no calls imported yet
+      if(callHistory.length===0) {
+        return (
+          <div style={{padding:"20px 16px"}}>
+            <div style={{background:`linear-gradient(135deg,${C.accent}18,${C.purple}12)`,border:`1px solid ${C.accent}35`,borderRadius:18,padding:"28px 20px",textAlign:"center",marginBottom:16}}>
+              <div style={{fontSize:52,marginBottom:12}}>📲</div>
+              <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:20,fontWeight:800,marginBottom:6}}>Import Your Call Log</div>
+              <div style={{fontSize:13,color:C.text2,lineHeight:1.7,marginBottom:20}}>
+                FollowPro reads your real call history.<br/>
+                Import once — it stays on your device.
+              </div>
+              <button className="tap" onClick={onOpenImport}
+                style={{background:`linear-gradient(135deg,${C.accent},${C.accent2})`,color:"#fff",borderRadius:12,padding:"14px 28px",fontSize:15,fontWeight:700,border:"none",boxShadow:`0 4px 20px ${C.accent}50`}}>
+                📥 Import Call Log
+              </button>
+            </div>
+
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:16,marginBottom:12}}>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12,color:C.text}}>How to export call log on Android</div>
+              {[
+                ["1","Open your Phone app → Recent Calls"],
+                ["2","Tap ⋮ Menu → Call history → Export"],
+                ["3","Save as CSV or use a backup app"],
+                ["4","Come back here and import the file"],
+              ].map(([n,t])=>(
+                <div key={n} style={{display:"flex",gap:10,marginBottom:10,alignItems:"flex-start"}}>
+                  <div style={{width:22,height:22,borderRadius:6,background:`${C.accent}25`,color:C.accent,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{n}</div>
+                  <div style={{fontSize:12,color:C.text2,lineHeight:1.5,paddingTop:2}}>{t}</div>
+                </div>
+              ))}
+              <div style={{fontSize:11,color:C.text3,marginTop:8,padding:"8px 10px",background:C.surface,borderRadius:8}}>
+                💡 Apps like <span style={{color:C.accent2}}>Call Log Backup & Restore</span> or <span style={{color:C.accent2}}>Contacts+ </span>can export CSV files that FollowPro can read.
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div style={{padding:"14px 14px 0"}}>
-          {/* Tip banner */}
+          {/* Tip + Import button */}
           <div style={{background:`linear-gradient(135deg,${C.accent}20,${C.purple}12)`,border:`1px solid ${C.accent}35`,borderRadius:14,padding:"11px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:12}}>
             <div style={{fontSize:28,flexShrink:0}}>👆</div>
-            <div>
+            <div style={{flex:1}}>
               <div style={{fontSize:13,fontWeight:700,color:C.accent2}}>Tap any call to schedule follow-up</div>
-              <div style={{fontSize:11,color:C.text3,marginTop:2}}>Name, phone &amp; location auto-fill instantly</div>
+              <div style={{fontSize:11,color:C.text3,marginTop:2}}>{callHistory.length} calls · Name, phone &amp; location auto-fill</div>
             </div>
+            <button className="tap" onClick={onOpenImport}
+              style={{background:`${C.accent}25`,color:C.accent2,border:`1px solid ${C.accent}40`,borderRadius:9,padding:"6px 10px",fontSize:11,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+              +Import
+            </button>
           </div>
 
           {/* Search */}
@@ -859,9 +907,277 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // SETTINGS VIEW
     // ═══════════════════════════════════════════════════════════════════
-    function SettingsView({ settings, setSettings, followups, showToast }) {
+    // CALL LOG IMPORT MODAL
+    // ═══════════════════════════════════════════════════════════════════
+    function CallLogImportModal({ onClose, onImport, showToast }) {
+      const [mode, setMode]         = useState(""); // "csv"|"json"|"manual"|"contact"
+      const [preview, setPreview]   = useState(null); // parsed rows before confirm
+      const [error, setError]       = useState("");
+      const [replace, setReplace]   = useState(false);
+      const [manualForm, setManual] = useState({ name:"", phone:"", type:"incoming", duration:"", location:"", callTime:"" });
+      const fileRef = useRef();
+
+      // ── CSV parser (handles quoted fields) ──
+      const parseCSV = text => {
+        const lines = text.trim().split(/\r?\n/);
+        if(lines.length < 2) throw new Error("CSV has no data rows");
+        const headers = lines[0].split(",").map(h=>h.replace(/^"|"$/g,"").trim());
+        return lines.slice(1).map((line,i) => {
+          const vals = [];
+          let cur="", inQ=false;
+          for(const ch of line){ if(ch==='"'){inQ=!inQ;}else if(ch===","&&!inQ){vals.push(cur);cur="";}else{cur+=ch;} }
+          vals.push(cur);
+          const row = {};
+          headers.forEach((h,j)=>{ row[h]=vals[j]||""; });
+          return normalizeCallEntry(row, i);
+        }).filter(r=>r.phone.length>=7);
+      };
+
+      const parseJSON = text => {
+        const arr = JSON.parse(text);
+        if(!Array.isArray(arr)) throw new Error("JSON must be an array");
+        return arr.map((r,i)=>normalizeCallEntry(r,i)).filter(r=>r.phone.length>=7);
+      };
+
+      const handleFile = async e => {
+        const file = e.target.files[0];
+        if(!file) return;
+        setError(""); setPreview(null);
+        try {
+          const text = await file.text();
+          const isJson = file.name.endsWith(".json") || text.trim().startsWith("[");
+          const rows = isJson ? parseJSON(text) : parseCSV(text);
+          if(rows.length===0) throw new Error("No valid entries found in file");
+          setPreview(rows);
+        } catch(err) {
+          setError(err.message || "Could not parse file. Check format.");
+        }
+      };
+
+      const confirmImport = () => {
+        if(!preview||preview.length===0) return;
+        onImport(preview, replace);
+      };
+
+      // ── Contact Picker (Android Chrome) ──
+      const pickContact = async () => {
+        if(!("contacts" in navigator && "ContactsManager" in window)) {
+          setError("Contact Picker not supported on this browser. Try Chrome on Android.");
+          return;
+        }
+        try {
+          const contacts = await navigator.contacts.select(["name","tel"],{multiple:true});
+          const entries = contacts.flatMap((c,i) =>
+            (c.tel||[]).map(ph => normalizeCallEntry({
+              name: (c.name||[])[0]||"Unknown",
+              phone: ph,
+              callTime: new Date().toISOString(),
+              duration: 0,
+              type: "incoming",
+            }, i))
+          ).filter(r=>r.phone.length>=7);
+          if(entries.length===0){ setError("No valid phone numbers found in selected contacts."); return; }
+          setPreview(entries);
+          setMode("contact");
+        } catch(err) {
+          setError("Contact picker cancelled or failed.");
+        }
+      };
+
+      const submitManual = () => {
+        if(!manualForm.name.trim()||!manualForm.phone.trim()) return;
+        const entry = normalizeCallEntry({
+          ...manualForm,
+          callTime: manualForm.callTime || new Date().toISOString(),
+        }, 0);
+        if(entry.phone.length<7){ setError("Enter a valid phone number"); return; }
+        onImport([entry], false);
+      };
+
+      const ModeBtn = ({id,icon,label,sub}) => (
+        <button className="tap" onClick={()=>{setMode(id);setError("");setPreview(null);}}
+          style={{background:mode===id?`${C.accent}25`:C.card2,border:`1px solid ${mode===id?C.accent:C.border}`,
+            borderRadius:12,padding:"14px 12px",display:"flex",alignItems:"center",gap:12,width:"100%",marginBottom:8,textAlign:"left"}}>
+          <span style={{fontSize:26,flexShrink:0}}>{icon}</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:13,color:mode===id?C.accent2:C.text}}>{label}</div>
+            <div style={{fontSize:11,color:C.text3,marginTop:1}}>{sub}</div>
+          </div>
+        </button>
+      );
+
+      return (
+        <Modal onClose={onClose} title="Import Call Log">
+
+          {/* Mode selector */}
+          {!mode && (
+            <div className="anim-up">
+              <div style={{fontSize:11,color:C.text3,marginBottom:12,lineHeight:1.6}}>
+                Choose how to bring your call history into FollowPro. Data stays on your device only.
+              </div>
+              <ModeBtn id="csv"     icon="📄" label="Import CSV File"    sub="Export from Phone app or Call Log Backup app"/>
+              <ModeBtn id="json"    icon="📋" label="Import JSON File"   sub="From FollowPro export or custom backup"/>
+              <ModeBtn id="contact" icon="👥" label="Pick from Contacts" sub="Chrome on Android — add contacts as call entries"/>
+              <ModeBtn id="manual"  icon="✏️"  label="Add Manually"      sub="Type a single contact's details"/>
+
+              <div style={{background:C.surface,borderRadius:10,padding:12,marginTop:4}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.text2,marginBottom:6}}>📲 Recommended: Call Log Backup</div>
+                <div style={{fontSize:11,color:C.text3,lineHeight:1.7}}>
+                  Install <span style={{color:C.accent2}}>Call Log Backup &amp; Restore</span> from Play Store →
+                  Backup → Share CSV → Open with FollowPro.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* CSV / JSON file picker */}
+          {(mode==="csv"||mode==="json") && !preview && (
+            <div className="anim-up">
+              <button className="tap" onClick={()=>setMode("")}
+                style={{background:"none",color:C.text3,fontSize:12,marginBottom:12,padding:0,border:"none"}}>← Back</button>
+              <div style={{border:`2px dashed ${C.border2}`,borderRadius:14,padding:"28px 20px",textAlign:"center",marginBottom:12,cursor:"pointer"}}
+                onClick={()=>fileRef.current.click()}>
+                <div style={{fontSize:36,marginBottom:8}}>{mode==="csv"?"📄":"📋"}</div>
+                <div style={{fontWeight:700,color:C.text,marginBottom:4}}>Tap to choose {mode.toUpperCase()} file</div>
+                <div style={{fontSize:11,color:C.text3}}>Accepts .{mode} files exported from your phone</div>
+                <input ref={fileRef} type="file" accept={mode==="csv"?".csv,text/csv":".json,application/json"}
+                  onChange={handleFile} style={{display:"none"}}/>
+              </div>
+
+              {mode==="csv" && (
+                <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:12,marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.text2,marginBottom:6}}>Expected CSV columns (any order):</div>
+                  <div style={{fontSize:10,color:C.text3,fontFamily:"monospace",lineHeight:2}}>
+                    Name, Number, Type, Date, Duration, Location<br/>
+                    <span style={{color:C.accent2}}>Type values:</span> incoming / outgoing / missed<br/>
+                    <span style={{color:C.accent2}}>Date format:</span> ISO (2024-01-15T10:30:00) or any JS-parseable date<br/>
+                    <span style={{color:C.accent2}}>Duration:</span> seconds (integer)
+                  </div>
+                </div>
+              )}
+              {error && <div style={{color:C.red,fontSize:12,marginBottom:10,padding:"8px 12px",background:`${C.red}15`,borderRadius:8}}>⚠️ {error}</div>}
+            </div>
+          )}
+
+          {/* Contact picker button */}
+          {mode==="contact" && !preview && (
+            <div className="anim-up">
+              <button className="tap" onClick={()=>setMode("")}
+                style={{background:"none",color:C.text3,fontSize:12,marginBottom:12,padding:0,border:"none"}}>← Back</button>
+              <div style={{textAlign:"center",padding:"24px 0"}}>
+                <div style={{fontSize:46,marginBottom:12}}>👥</div>
+                <div style={{fontWeight:700,marginBottom:6}}>Pick contacts from your phone</div>
+                <div style={{fontSize:12,color:C.text3,marginBottom:20,lineHeight:1.6}}>
+                  Opens your device contact picker.<br/>Works best on Chrome for Android.
+                </div>
+                <button className="tap" onClick={pickContact}
+                  style={{background:C.accent,color:"#fff",borderRadius:12,padding:"13px 28px",fontSize:14,fontWeight:700,border:"none"}}>
+                  Open Contact Picker
+                </button>
+              </div>
+              {error && <div style={{color:C.red,fontSize:12,marginTop:10,padding:"8px 12px",background:`${C.red}15`,borderRadius:8}}>⚠️ {error}</div>}
+            </div>
+          )}
+
+          {/* Manual entry */}
+          {mode==="manual" && !preview && (
+            <div className="anim-up">
+              <button className="tap" onClick={()=>setMode("")}
+                style={{background:"none",color:C.text3,fontSize:12,marginBottom:12,padding:0,border:"none"}}>← Back</button>
+              <FL l="Name">
+                <input placeholder="Contact name" value={manualForm.name}
+                  onChange={e=>setManual(f=>({...f,name:e.target.value}))} style={IS}/>
+              </FL>
+              <FL l="Phone Number">
+                <input placeholder="10-digit mobile number" value={manualForm.phone} type="tel"
+                  onChange={e=>setManual(f=>({...f,phone:e.target.value}))} style={IS}/>
+              </FL>
+              <FL l="Call Type">
+                <div style={{display:"flex",gap:8}}>
+                  {["incoming","outgoing","missed"].map(t=>(
+                    <button key={t} onClick={()=>setManual(f=>({...f,type:t}))} className="tap"
+                      style={{flex:1,borderRadius:10,padding:"9px 4px",fontSize:11,fontWeight:700,
+                        background:manualForm.type===t?(t==="missed"?C.red:t==="outgoing"?C.accent:C.green):C.card2,
+                        color:manualForm.type===t?"#fff":C.text3,
+                        border:`1px solid ${manualForm.type===t?"transparent":C.border}`}}>
+                      {t[0].toUpperCase()+t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </FL>
+              <FL l="Call Date &amp; Time (optional)">
+                <input type="datetime-local" value={manualForm.callTime.slice(0,16)}
+                  onChange={e=>setManual(f=>({...f,callTime:new Date(e.target.value).toISOString()}))} style={IS}/>
+              </FL>
+              <FL l="Duration in seconds (optional)">
+                <input type="number" placeholder="e.g. 120" value={manualForm.duration}
+                  onChange={e=>setManual(f=>({...f,duration:e.target.value}))} style={IS}/>
+              </FL>
+              <FL l="Location (optional)">
+                <input placeholder="City or area" value={manualForm.location}
+                  onChange={e=>setManual(f=>({...f,location:e.target.value}))} style={IS}/>
+              </FL>
+              {error && <div style={{color:C.red,fontSize:12,marginBottom:10,padding:"8px 12px",background:`${C.red}15`,borderRadius:8}}>⚠️ {error}</div>}
+              <Btn label="➕ Add to Call Log" color={C.accent} disabled={!manualForm.name||!manualForm.phone} onClick={submitManual}/>
+            </div>
+          )}
+
+          {/* Preview before confirm */}
+          {preview && (
+            <div className="anim-up">
+              <div style={{background:`${C.green}15`,border:`1px solid ${C.green}40`,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>✅</span>
+                <div>
+                  <div style={{fontWeight:700,fontSize:14,color:C.green}}>{preview.length} calls ready to import</div>
+                  <div style={{fontSize:11,color:C.text3,marginTop:2}}>Preview of first few entries below</div>
+                </div>
+              </div>
+
+              {/* Replace toggle */}
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,padding:"10px 12px",background:C.card,borderRadius:10,border:`1px solid ${C.border}`}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:700}}>Replace existing call log</div>
+                  <div style={{fontSize:10,color:C.text3,marginTop:1}}>Off = merge with existing</div>
+                </div>
+                <button className="tap" onClick={()=>setReplace(r=>!r)}
+                  style={{width:44,height:24,borderRadius:12,background:replace?C.accent:C.border2,border:"none",position:"relative",transition:"background 0.2s",flexShrink:0}}>
+                  <div style={{width:18,height:18,borderRadius:9,background:"#fff",position:"absolute",top:3,left:replace?23:3,transition:"left 0.2s"}}/>
+                </button>
+              </div>
+
+              {/* Mini preview list */}
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden",marginBottom:14,maxHeight:200,overflowY:"auto"}}>
+                {preview.slice(0,8).map((c,i)=>(
+                  <div key={i} style={{display:"flex",gap:10,alignItems:"center",padding:"9px 12px",borderBottom:i===Math.min(7,preview.length-1)?"none":`1px solid ${C.border}`}}>
+                    <div style={{width:34,height:34,borderRadius:9,background:`${c.type==="missed"?C.red:c.type==="outgoing"?C.accent:C.green}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:800,color:c.type==="missed"?C.red:c.type==="outgoing"?C.accent:C.green,flexShrink:0}}>
+                      {c.name==="Unknown"?"?":c.name[0]}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:12,color:c.type==="missed"?C.red:C.text}}>{c.name}</div>
+                      <div style={{fontSize:10,color:C.text3}}>{c.phone} · {c.type} · {fmtDur(c.duration)}</div>
+                    </div>
+                  </div>
+                ))}
+                {preview.length>8 && (
+                  <div style={{textAlign:"center",padding:"8px",fontSize:11,color:C.text3}}>+{preview.length-8} more entries</div>
+                )}
+              </div>
+
+              <Btn label={`📥 Import ${preview.length} Calls`} color={C.accent} onClick={confirmImport}/>
+              <button className="tap" onClick={()=>setPreview(null)}
+                style={{background:"none",color:C.text3,fontSize:12,width:"100%",padding:"10px",border:"none",marginTop:4}}>
+                ← Choose different file
+              </button>
+            </div>
+          )}
+        </Modal>
+      );
+    }
+
+    
+    // ═══════════════════════════════════════════════════════════════════
+    function SettingsView({ settings, setSettings, followups, callHistory, showToast, onClearCalls, onOpenImport }) {
       const [newOpt, setNewOpt] = useState("");
       const addOpt = () => {
         if(!newOpt.trim()) return;
@@ -870,7 +1186,7 @@
       };
       const removeOpt = o => setSettings(s=>({...s,interestedOptions:s.interestedOptions.filter(x=>x!==o)}));
       const exportData = () => {
-        const blob = new Blob([JSON.stringify({followups,settings},null,2)],{type:"application/json"});
+        const blob = new Blob([JSON.stringify({followups,settings,callHistory},null,2)],{type:"application/json"});
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href=url; a.download="followpro-backup.json"; a.click();
         URL.revokeObjectURL(url);
@@ -908,6 +1224,12 @@
               <button onClick={addOpt} className="tap"
                 style={{background:C.accent,color:"#fff",borderRadius:10,padding:"9px 14px",fontWeight:700,fontSize:13}}>Add</button>
             </div>
+          </SC>
+
+          {/* Call Log Management */}
+          <SC title="Call Log" sub={`${callHistory.length} calls imported`}>
+            <Btn label="📥 Import / Add Calls" color={C.accent} onClick={onOpenImport} style={{marginBottom:8}}/>
+            <Btn label="🗑️ Clear Call Log" color={C.card} onClick={()=>{ if(window.confirm("Clear all imported calls?")) onClearCalls(); }} style={{border:`1px solid ${C.border}`,color:C.red}}/>
           </SC>
 
           {/* Data */}
