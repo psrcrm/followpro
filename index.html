@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0A0C12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FollowPro" />
+  <meta name="description" content="Smart Follow-up Manager for Sales Professionals" />
+  <title>FollowPro — Smart Follow-up Manager</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #0A0C12; color: #EDF0FF; font-family: 'Plus Jakarta Sans', sans-serif; }
+    #root { height: 100%; }
+    body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+    #splash {
+      position: fixed; inset: 0; background: #0A0C12;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 9999; transition: opacity 0.5s ease;
+    }
+    #splash.hide { opacity: 0; pointer-events: none; }
+    #splash .sp-icon {
+      width: 72px; height: 72px;
+      background: linear-gradient(135deg, #4E7CFF, #7B9FFF);
+      border-radius: 20px; display: flex; align-items: center; justify-content: center;
+      font-size: 36px; margin-bottom: 20px;
+      box-shadow: 0 0 48px #4E7CFF50;
+      animation: spPulse 1.8s ease-in-out infinite;
+    }
+    #splash .sp-name { font-family: 'Space Grotesk', sans-serif; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+    #splash .sp-tag { font-size: 11px; color: #5A6485; margin-top: 6px; letter-spacing: 1px; font-weight: 600; }
+    #splash .sp-bar { width: 100px; height: 2px; background: #222840; border-radius: 2px; margin-top: 36px; overflow: hidden; }
+    #splash .sp-fill { height: 100%; background: linear-gradient(90deg, #4E7CFF, #A78BFA); animation: spLoad 1.8s ease forwards; }
+    @keyframes spPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+    @keyframes spLoad { from{width:0} to{width:100%} }
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2A3150; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <div class="sp-icon">📞</div>
+    <div class="sp-name">FollowPro</div>
+    <div class="sp-tag">SMART FOLLOW-UP MANAGER</div>
+    <div class="sp-bar"><div class="sp-fill"></div></div>
+  </div>
+  <div id="root"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    const C = {
+      bg:'#0A0C12', surface:'#10131C', card:'#161B28', card2:'#1C2235',
+      border:'#222840', border2:'#2A3150',
+      accent:'#4E7CFF', accent2:'#7B9FFF',
+      green:'#22D87A', orange:'#FF9F45', red:'#FF4D6A', purple:'#A78BFA',
+      text:'#EDF0FF', text2:'#A0ABCC', text3:'#5A6485',
+      wa:'#25D366',
+    };
+
+    const DEFAULT_SETTINGS = {
+      interestedOptions: ["Plot","Insurance","Apartment","Villa","Commercial","Farmhouse","Loan"],
+    };
+
+    const fmt  = d => { if(!d) return ""; return new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); };
+    const fmtT = t => { if(!t) return ""; const [h,m]=t.split(":"); const hr=parseInt(h); return `${hr%12||12}:${m} ${hr>=12?"PM":"AM"}`; };
+    const todayStr = () => new Date().toISOString().split("T")[0];
+    const daysInMonth = (y,m) => new Date(y,m+1,0).getDate();
+    const firstDay    = (y,m) => new Date(y,m,1).getDay();
+    const toDS = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const load = (k,fb) => { try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fb; }catch{ return fb; } };
+    const save = (k,v) => { try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} };
+
+    const relTime = ds => {
+      const today = todayStr();
+      if(ds===today) return "Today";
+      const diff = Math.round((new Date(ds)-new Date(today))/86400000);
+      if(diff===1) return "Tomorrow";
+      if(diff===-1) return "Yesterday";
+      if(diff>0) return `In ${diff}d`;
+      return `${Math.abs(diff)}d ago`;
+    };
+
+    const fmtDur = s => {
+      if(!s||s===0) return "Missed";
+      if(s<60) return `${s}s`;
+      return `${Math.floor(s/60)}m ${s%60}s`;
+    };
+
+    const fmtCallTime = iso => {
+      const d = new Date(iso);
+      const today = new Date(); today.setHours(0,0,0,0);
+      const yest  = new Date(today); yest.setDate(yest.getDate()-1);
+      const callDay = new Date(d); callDay.setHours(0,0,0,0);
+      const timeStr = d.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
+      if(callDay.getTime()===today.getTime()) return `Today ${timeStr}`;
+      if(callDay.getTime()===yest.getTime())  return `Yesterday ${timeStr}`;
+      return `${d.toLocaleDateString("en-IN",{day:"2-digit",month:"short"})} ${timeStr}`;
+    };
+
+    const generateMockCallHistory = () => {
+      const now = Date.now();
+      return [
+        {id:"c1", name:"Rajesh Kumar",   phone:"9876543210", callTime:new Date(now-1*3600000).toISOString(),              duration:185, type:"incoming", location:"Banjara Hills"},
+        {id:"c2", name:"Priya Sharma",   phone:"9823456789", callTime:new Date(now-3*3600000).toISOString(),              duration:92,  type:"outgoing", location:"Jubilee Hills"},
+        {id:"c3", name:"Amit Singh",     phone:"9712345678", callTime:new Date(now-6*3600000).toISOString(),              duration:240, type:"outgoing", location:"Gachibowli"},
+        {id:"c4", name:"Sunita Patel",   phone:"9634567890", callTime:new Date(now-1*86400000).toISOString(),             duration:0,   type:"missed",   location:"Kondapur"},
+        {id:"c5", name:"Vikram Nair",    phone:"9545678901", callTime:new Date(now-1*86400000-2*3600000).toISOString(),   duration:310, type:"incoming", location:"HITEC City"},
+        {id:"c6", name:"Meena Reddy",    phone:"9456789012", callTime:new Date(now-2*86400000).toISOString(),             duration:0,   type:"missed",   location:"Madhapur"},
+        {id:"c7", name:"Suresh Iyer",    phone:"9367890123", callTime:new Date(now-2*86400000-4*3600000).toISOString(),   duration:128, type:"outgoing", location:"Kukatpally"},
+        {id:"c8", name:"Lakshmi Devi",   phone:"9278901234", callTime:new Date(now-3*86400000).toISOString(),             duration:55,  type:"incoming", location:"Miyapur"},
+        {id:"c9", name:"Kiran Rao",      phone:"9189012345", callTime:new Date(now-3*86400000-1*3600000).toISOString(),   duration:0,   type:"missed",   location:"Nizampet"},
+        {id:"c10",name:"Deepa Krishnan", phone:"9090123456", callTime:new Date(now-4*86400000).toISOString(),             duration:420, type:"outgoing", location:"Lingampally"},
+        {id:"c11",name:"Ravi Teja",      phone:"8901234567", callTime:new Date(now-4*86400000-3*3600000).toISOString(),   duration:88,  type:"incoming", location:"Kompally"},
+        {id:"c12",name:"Ananya Gupta",   phone:"8812345678", callTime:new Date(now-5*86400000).toISOString(),             duration:0,   type:"missed",   location:"Bowenpally"},
+        {id:"c13",name:"Sanjay Mehta",   phone:"8723456789", callTime:new Date(now-5*86400000-2*3600000).toISOString(),   duration:195, type:"outgoing", location:"Secunderabad"},
+        {id:"c14",name:"Kavya Nambiar",  phone:"8634567890", callTime:new Date(now-6*86400000).toISOString(),             duration:145, type:"incoming", location:"Alwal"},
+        {id:"c15",name:"Unknown",        phone:"9900112233", callTime:new Date(now-6*86400000-1*3600000).toISOString(),   duration:30,  type:"incoming", location:""},
+      ];
+    };
+
+    // ─── GLOBAL STYLES ───────────────────────────────────────────────────
+    function GlobalStyles() {
+      return <style>{`
+        input,select,textarea{outline:none;-webkit-appearance:none;}
+        button{cursor:pointer;border:none;-webkit-tap-highlight-color:transparent;}
+        a{-webkit-tap-highlight-color:transparent;}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slideUp{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        .anim-up{animation:fadeUp 0.3s cubic-bezier(0.16,1,0.3,1) both;}
+        .anim-slide{animation:slideUp 0.38s cubic-bezier(0.16,1,0.3,1) both;}
+        .anim-fade{animation:fadeIn 0.25s ease both;}
+        .tap:active{opacity:0.7;transform:scale(0.975);transition:all 0.1s;}
+        input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:0.4;}
+        input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:0.4;}
+        select option{background:#161B28;color:#EDF0FF;}
+        .pill-scroll{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none;}
+        .pill-scroll::-webkit-scrollbar{display:none;}
+        .tab-bar{display:flex;background:#10131C;border-top:1px solid #222840;padding:8px 8px calc(8px + env(safe-area-inset-bottom));}
+        .tab-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 4px;border-radius:10px;cursor:pointer;transition:all 0.2s;border:none;background:transparent;}
+        .tab-btn.active{background:#4E7CFF18;}
+      `}</style>;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // APP ROOT
+    // ═══════════════════════════════════════════════════════════════════
+    function App() {
+      const [tab, setTab]             = useState("calls");
+      const [followups, setFollowups] = useState(() => load("fp_followups", []));
+      const [settings, setSettings]   = useState(() => load("fp_settings", DEFAULT_SETTINGS));
+      const [callHistory]             = useState(() => {
+        const stored = load("fp_callhistory", null);
+        if(stored) return stored;
+        const generated = generateMockCallHistory();
+        save("fp_callhistory", generated);
+        return generated;
+      });
+      const [showForm, setShowForm]       = useState(false);
+      const [prefill, setPrefill]         = useState(null);
+      const [selectedFU, setSelectedFU]   = useState(null);
+      const [rescheduleId, setRescheduleId] = useState(null);
+      const [toast, setToast]             = useState(null);
+
+      useEffect(() => save("fp_followups", followups), [followups]);
+      useEffect(() => save("fp_settings",  settings),  [settings]);
+
+      const showToast = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),2800); };
+
+      const openFormFromCall = call => {
+        setPrefill({ name:call.name, phone:call.phone, location:call.location||"", lastCalled:call.callTime.split("T")[0] });
+        setRescheduleId(null);
+        setShowForm(true);
+      };
+
+      const handleSave = data => {
+        if(rescheduleId) {
+          setFollowups(p => p.map(f => f.id===rescheduleId ? {...f,...data,done:false,rescheduled:true} : f));
+          showToast("Rescheduled ✓");
+          setRescheduleId(null);
+        } else {
+          setFollowups(p => [...p, {...data, id:Date.now(), done:false, createdAt:new Date().toISOString()}]);
+          showToast("Follow-up scheduled! 🎯");
+        }
+        setShowForm(false);
+        setPrefill(null);
+      };
+
+      const markDone = id => { setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
+      const markDoneReschedule = fu => { setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f)); setSelectedFU(null); setRescheduleId(fu.id); setPrefill(null); setShowForm(true); };
+      const deleteFU = id => { setFollowups(p=>p.filter(f=>f.id!==id)); setSelectedFU(null); showToast("Deleted","err"); };
+
+      const today = todayStr();
+      const counts = {
+        overdue:  followups.filter(f=>!f.done&&f.scheduleDate<today).length,
+        today:    followups.filter(f=>!f.done&&f.scheduleDate===today).length,
+        upcoming: followups.filter(f=>!f.done&&f.scheduleDate>today).length,
+        done:     followups.filter(f=>f.done).length,
+      };
+      const pendingTotal = counts.overdue + counts.today;
+
+      const TABS = [
+        {id:"calls",    emoji:"📞", label:"Calls"},
+        {id:"schedule", emoji:"📋", label:"Schedule"},
+        {id:"calendar", emoji:"📅", label:"Calendar"},
+        {id:"settings", emoji:"⚙️",  label:"Settings"},
+      ];
+
+      return (
+        <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Plus Jakarta Sans',sans-serif",maxWidth:520,margin:"0 auto",display:"flex",flexDirection:"column",position:"relative"}}>
+          <GlobalStyles/>
+
+          {/* ── Header ── */}
+          <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"13px 16px 11px",position:"sticky",top:0,zIndex:50,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:36,height:36,background:`linear-gradient(135deg,${C.accent},${C.accent2})`,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>📞</div>
+              <div>
+                <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:18,fontWeight:800,letterSpacing:"-0.3px",lineHeight:1.1}}>FollowPro</div>
+                <div style={{fontSize:10,color:C.text3,fontWeight:600,marginTop:1}}>
+                  {tab==="calls"    && "Tap call → Schedule follow-up"}
+                  {tab==="schedule" && (pendingTotal>0 ? `${pendingTotal} need attention` : "All caught up ✓")}
+                  {tab==="calendar" && "Your follow-up calendar"}
+                  {tab==="settings"&& "Preferences & backup"}
+                </div>
+              </div>
+            </div>
+            {pendingTotal>0 && (
+              <div style={{background:`${C.red}22`,border:`1px solid ${C.red}40`,borderRadius:8,padding:"4px 9px",fontSize:11,color:C.red,fontWeight:700}}>
+                {pendingTotal} pending
+              </div>
+            )}
+          </div>
+
+          {/* ── Main content ── */}
+          <div style={{flex:1,overflowY:"auto",paddingBottom:76}}>
+            {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall}/>}
+            {tab==="schedule" && <ScheduleView followups={followups} today={today} onSelect={setSelectedFU} counts={counts}/>}
+            {tab==="calendar" && <CalendarView followups={followups} today={today} onSelectFU={setSelectedFU}/>}
+            {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} showToast={showToast}/>}
+          </div>
+
+          {/* ── Tab Bar ── */}
+          <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:520,zIndex:80}} className="tab-bar">
+            {TABS.map(t => (
+              <button key={t.id} className={`tab-btn${tab===t.id?" active":""}`} onClick={()=>setTab(t.id)}>
+                <span style={{fontSize:20,lineHeight:1}}>{t.emoji}</span>
+                <span style={{fontSize:9,fontWeight:700,letterSpacing:"0.4px",textTransform:"uppercase",color:tab===t.id?C.accent:C.text3}}>{t.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* ── FAB ── */}
+          {(tab==="calls"||tab==="schedule") && (
+            <button className="tap" onClick={()=>{ setPrefill(null); setRescheduleId(null); setShowForm(true); }}
+              style={{position:"fixed",bottom:80,right:20,width:52,height:52,borderRadius:"50%",
+                background:`linear-gradient(135deg,${C.accent},${C.accent2})`,color:"#fff",fontSize:24,
+                display:"flex",alignItems:"center",justifyContent:"center",
+                boxShadow:`0 4px 20px ${C.accent}60`,zIndex:90,border:"none"}}>+</button>
+          )}
+
+          {/* ── Modals ── */}
+          {showForm && (
+            <FollowupForm
+              settings={settings} callHistory={callHistory} prefill={prefill}
+              onSave={handleSave}
+              onClose={()=>{ setShowForm(false); setPrefill(null); setRescheduleId(null); }}
+              isReschedule={!!rescheduleId}
+            />
+          )}
+          {selectedFU && !selectedFU._multi && (
+            <FUDetail fu={selectedFU} onClose={()=>setSelectedFU(null)}
+              onDone={()=>markDone(selectedFU.id)} onReschedule={()=>markDoneReschedule(selectedFU)}
+              onDelete={()=>deleteFU(selectedFU.id)}/>
+          )}
+          {selectedFU?._multi && (
+            <MultiModal fus={selectedFU._multi} onClose={()=>setSelectedFU(null)} onPick={f=>setSelectedFU(f)}/>
+          )}
+
+          {/* ── Toast ── */}
+          {toast && (
+            <div className="anim-fade" style={{position:"fixed",bottom:88,left:"50%",transform:"translateX(-50%)",
+              background:toast.type==="err"?C.red:C.green,color:"#fff",borderRadius:12,
+              padding:"10px 20px",fontSize:13,fontWeight:700,zIndex:999,whiteSpace:"nowrap",
+              boxShadow:"0 4px 24px rgba(0,0,0,0.5)"}}>
+              {toast.msg}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CALLS VIEW  — THE CORE FEATURE
+    // ═══════════════════════════════════════════════════════════════════
+    function CallsView({ callHistory, followups, onSchedule }) {
+      const [search, setSearch] = useState("");
+      const [filter, setFilter] = useState("all");
+
+      const hasFollowup = phone => followups.some(f=>f.phone===phone&&!f.done);
+
+      const filtered = callHistory.filter(c => {
+        if(filter!=="all" && c.type!==filter) return false;
+        if(search) return c.name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search);
+        return true;
+      });
+
+      // Group by day
+      const groups = [];
+      const dayMap = {};
+      filtered.forEach(c => {
+        const day = c.callTime.split("T")[0];
+        if(!dayMap[day]) { dayMap[day]=[]; groups.push({day,calls:dayMap[day]}); }
+        dayMap[day].push(c);
+      });
+
+      const groupLabel = day => {
+        const today = todayStr();
+        const yest = new Date(new Date().getTime()-86400000).toISOString().split("T")[0];
+        if(day===today) return "Today";
+        if(day===yest)  return "Yesterday";
+        return new Date(day).toLocaleDateString("en-IN",{weekday:"long",day:"2-digit",month:"short"});
+      };
+
+      const FILTERS = [{k:"all",l:"All"},{k:"missed",l:"Missed"},{k:"incoming",l:"Incoming"},{k:"outgoing",l:"Outgoing"}];
+
+      return (
+        <div style={{padding:"14px 14px 0"}}>
+          {/* Tip banner */}
+          <div style={{background:`linear-gradient(135deg,${C.accent}20,${C.purple}12)`,border:`1px solid ${C.accent}35`,borderRadius:14,padding:"11px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:12}}>
+            <div style={{fontSize:28,flexShrink:0}}>👆</div>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:C.accent2}}>Tap any call to schedule follow-up</div>
+              <div style={{fontSize:11,color:C.text3,marginTop:2}}>Name, phone &amp; location auto-fill instantly</div>
+            </div>
+          </div>
+
+          {/* Search */}
+          <div style={{position:"relative",marginBottom:10}}>
+            <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.text3,pointerEvents:"none"}}>🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name or number..."
+              style={{...IS,paddingLeft:36}}/>
+          </div>
+
+          {/* Filter pills */}
+          <div className="pill-scroll" style={{marginBottom:14}}>
+            {FILTERS.map(({k,l})=>(
+              <button key={k} onClick={()=>setFilter(k)} className="tap"
+                style={{background:filter===k?C.accent:C.card,color:filter===k?"#fff":C.text2,
+                  border:`1px solid ${filter===k?C.accent:C.border}`,borderRadius:20,
+                  padding:"6px 14px",fontSize:12,fontWeight:600,whiteSpace:"nowrap",transition:"all 0.18s"}}>
+                {k==="missed" && <span style={{color:filter===k?"#fff":C.red}}>● </span>}
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* Groups */}
+          {groups.length===0 ? (
+            <div style={{textAlign:"center",padding:"48px 20px",color:C.text3}}>
+              <div style={{fontSize:36,marginBottom:10}}>📵</div>
+              <div style={{fontSize:14,fontWeight:600,color:C.text2}}>No calls found</div>
+            </div>
+          ) : groups.map(({day,calls})=>(
+            <div key={day} className="anim-up">
+              <div style={{fontSize:10,fontWeight:700,color:C.text3,letterSpacing:"0.8px",textTransform:"uppercase",marginBottom:8,marginTop:6}}>
+                {groupLabel(day)}
+              </div>
+              <div style={{background:C.card,borderRadius:14,border:`1px solid ${C.border}`,overflow:"hidden",marginBottom:16}}>
+                {calls.map((c,i)=>(
+                  <CallRow key={c.id} call={c} isLast={i===calls.length-1}
+                    hasFollowup={hasFollowup(c.phone)} onSchedule={()=>onSchedule(c)}/>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function CallRow({ call:c, isLast, hasFollowup, onSchedule }) {
+      const tcol  = c.type==="missed"?C.red:c.type==="incoming"?C.green:C.accent;
+      const ticon = c.type==="missed"?"📵":c.type==="incoming"?"📲":"📤";
+      return (
+        <div style={{display:"flex",alignItems:"center",padding:"12px 14px",
+          borderBottom:isLast?"none":`1px solid ${C.border}`,background:"transparent"}}>
+          {/* Avatar */}
+          <div style={{width:44,height:44,borderRadius:12,background:`${tcol}18`,border:`1.5px solid ${tcol}35`,
+            display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginRight:12,
+            fontSize:18,fontWeight:800,color:tcol,position:"relative"}}>
+            {c.name==="Unknown"?"👤":c.name[0]}
+            <span style={{position:"absolute",bottom:-5,right:-5,fontSize:13,lineHeight:1,background:C.card,borderRadius:6,padding:"0 2px"}}>{ticon}</span>
+          </div>
+          {/* Info */}
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700,fontSize:14,color:c.type==="missed"?C.red:C.text,marginBottom:2}}>{c.name}</div>
+            <div style={{fontSize:11,color:C.text3}}>📱 {c.phone}{c.location&&<span> · 📍 {c.location}</span>}</div>
+            <div style={{fontSize:10,color:C.text3,marginTop:2,display:"flex",gap:6}}>
+              <span>{fmtCallTime(c.callTime)}</span>
+              <span>·</span>
+              <span style={{color:c.type==="missed"?C.red:C.text3}}>{fmtDur(c.duration)}</span>
+            </div>
+          </div>
+          {/* Action */}
+          <button className="tap" onClick={onSchedule}
+            style={{background:hasFollowup?`${C.green}18`:`${C.accent}18`,
+              color:hasFollowup?C.green:C.accent,
+              border:`1px solid ${hasFollowup?C.green:C.accent}50`,
+              borderRadius:10,padding:"7px 11px",fontSize:11,fontWeight:700,
+              whiteSpace:"nowrap",flexShrink:0,marginLeft:8}}>
+            {hasFollowup?"+ Again":"📅 Follow"}
+          </button>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SCHEDULE VIEW
+    // ═══════════════════════════════════════════════════════════════════
+    function ScheduleView({ followups, today, onSelect, counts }) {
+      const [filter, setFilter] = useState("all");
+      const [search, setSearch] = useState("");
+
+      const FILTERS = [
+        {k:"all",     l:"Active",   n:null},
+        {k:"today",   l:"Today",    n:counts.today,   c:C.orange},
+        {k:"overdue", l:"Overdue",  n:counts.overdue, c:C.red},
+        {k:"upcoming",l:"Upcoming", n:counts.upcoming,c:C.green},
+        {k:"done",    l:"Done",     n:counts.done,    c:C.text3},
+      ];
+
+      let list = followups.filter(f => {
+        if(filter==="done")     return f.done;
+        if(filter==="today")    return !f.done&&f.scheduleDate===today;
+        if(filter==="overdue")  return !f.done&&f.scheduleDate<today;
+        if(filter==="upcoming") return !f.done&&f.scheduleDate>today;
+        return !f.done;
+      });
+      if(search) list=list.filter(f=>f.name.toLowerCase().includes(search.toLowerCase())||f.phone.includes(search)||(f.location||"").toLowerCase().includes(search.toLowerCase()));
+      list=list.sort((a,b)=>a.scheduleDate>b.scheduleDate?1:-1);
+
+      return (
+        <div style={{padding:"14px 14px 0"}}>
+          {/* Stats */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
+            {[{l:"Overdue",n:counts.overdue,c:C.red,i:"🔥"},{l:"Today",n:counts.today,c:C.orange,i:"⏰"},{l:"Coming",n:counts.upcoming,c:C.green,i:"📆"},{l:"Done",n:counts.done,c:C.accent,i:"✅"}].map(({l,n,c,i})=>(
+              <div key={l} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"10px 6px",textAlign:"center"}}>
+                <div style={{fontSize:14,marginBottom:3}}>{i}</div>
+                <div style={{fontSize:22,fontWeight:800,color:c,fontFamily:"'Space Grotesk',sans-serif",lineHeight:1}}>{n}</div>
+                <div style={{fontSize:9,color:C.text3,marginTop:3,fontWeight:700}}>{l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Search */}
+          <div style={{position:"relative",marginBottom:10}}>
+            <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.text3,pointerEvents:"none"}}>🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, phone, location..."
+              style={{...IS,paddingLeft:36}}/>
+          </div>
+
+          {/* Filter pills */}
+          <div className="pill-scroll" style={{marginBottom:14}}>
+            {FILTERS.map(({k,l,n,c})=>(
+              <button key={k} onClick={()=>setFilter(k)} className="tap"
+                style={{background:filter===k?C.accent:C.card,color:filter===k?"#fff":C.text2,
+                  border:`1px solid ${filter===k?C.accent:C.border}`,borderRadius:20,
+                  padding:"6px 13px",fontSize:12,fontWeight:600,whiteSpace:"nowrap",
+                  display:"flex",alignItems:"center",gap:5,transition:"all 0.18s"}}>
+                {l}
+                {n!=null&&n>0&&<span style={{background:filter===k?"#fff2":(`${c||C.accent}30`),color:filter===k?"#fff":c||C.accent,borderRadius:8,padding:"0 6px",fontSize:10,fontWeight:800}}>{n}</span>}
+              </button>
+            ))}
+          </div>
+
+          {list.length===0 ? (
+            <div style={{textAlign:"center",padding:"52px 20px",color:C.text3}}>
+              <div style={{fontSize:40,marginBottom:12}}>📭</div>
+              <div style={{fontSize:14,fontWeight:700,color:C.text2}}>No follow-ups here</div>
+              <div style={{fontSize:12,marginTop:6}}>Tap a call in Calls tab or + to add</div>
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {list.map(f=><FUCard key={f.id} fu={f} today={today} onClick={()=>onSelect(f)}/>)}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function FUCard({fu:f, today, onClick}) {
+      const isOverdue = !f.done && f.scheduleDate<today;
+      const isToday   = f.scheduleDate===today;
+      const bc = f.done?C.border:isOverdue?C.red:isToday?C.orange:C.accent;
+      const label = f.done?"Done ✓":isOverdue?"Overdue":isToday?"Today":relTime(f.scheduleDate);
+      return (
+        <div className="anim-up tap" onClick={onClick}
+          style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${bc}`,
+            borderRadius:14,padding:"13px 14px",cursor:"pointer",opacity:f.done?0.5:1}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{f.name}</div>
+              <div style={{fontSize:11,color:C.text3}}>📱 {f.phone}</div>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0,marginLeft:10}}>
+              <span style={{fontSize:11,fontWeight:700,color:bc,background:`${bc}20`,borderRadius:6,padding:"3px 9px"}}>{label}</span>
+              {f.scheduleTime && <div style={{fontSize:10,color:C.text3,marginTop:3}}>⏰ {fmtT(f.scheduleTime)}</div>}
+              {f.priority && <div style={{fontSize:10,marginTop:3,color:f.priority==="High"?C.red:f.priority==="Medium"?C.orange:C.green,fontWeight:700}}>● {f.priority}</div>}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:5,marginTop:8,flexWrap:"wrap"}}>
+            {f.location  && <Chip i="📍" t={f.location}/>}
+            {f.interested && <Chip i="🏷️" t={f.interested} accent/>}
+          </div>
+          {f.note && <div style={{marginTop:8,fontSize:11,color:C.text2,background:C.surface,borderRadius:8,padding:"6px 10px",borderLeft:`2px solid ${C.border2}`}}>💬 {f.note.length>90?f.note.slice(0,90)+"…":f.note}</div>}
+        </div>
+      );
+    }
+
+    const Chip = ({i,t,accent}) => (
+      <span style={{fontSize:11,color:accent?C.accent2:C.text3,background:accent?`${C.accent}18`:C.surface,borderRadius:6,padding:"3px 9px",display:"inline-flex",alignItems:"center",gap:3,fontWeight:500}}>
+        {i} {t}
+      </span>
+    );
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CALENDAR VIEW
+    // ═══════════════════════════════════════════════════════════════════
+    function CalendarView({ followups, today, onSelectFU }) {
+      const [calYear,  setCalYear]  = useState(new Date().getFullYear());
+      const [calMonth, setCalMonth] = useState(new Date().getMonth());
+      const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      const DAYS   = ["S","M","T","W","T","F","S"];
+      const days   = daysInMonth(calYear, calMonth);
+      const fd     = firstDay(calYear, calMonth);
+      const getCount = d => followups.filter(f=>f.scheduleDate===toDS(calYear,calMonth,d)&&!f.done).length;
+      const prevM = () => { if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1); };
+      const nextM = () => { if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1); };
+
+      const handleDate = ds => {
+        const fus = followups.filter(f=>f.scheduleDate===ds&&!f.done);
+        if(fus.length===1) onSelectFU(fus[0]);
+        else if(fus.length>1) onSelectFU({_multi:fus});
+      };
+
+      return (
+        <div style={{padding:"14px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+            <button onClick={prevM} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,color:C.text,borderRadius:10,width:40,height:40,fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>‹</button>
+            <div style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:800,fontSize:18}}>{MONTHS[calMonth]} {calYear}</div>
+            <button onClick={nextM} className="tap" style={{background:C.card,border:`1px solid ${C.border}`,color:C.text,borderRadius:10,width:40,height:40,fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>›</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
+            {DAYS.map((d,i)=><div key={i} style={{textAlign:"center",fontSize:11,fontWeight:700,color:C.text3,padding:"4px 0"}}>{d}</div>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+            {Array(fd).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+            {Array(days).fill(null).map((_,i)=>{
+              const d=i+1;
+              const ds=toDS(calYear,calMonth,d);
+              const count=getCount(d);
+              const isT=ds===today;
+              const isPast=ds<today;
+              return (
+                <div key={d} onClick={()=>count>0&&handleDate(ds)} className={count>0?"tap":""}
+                  style={{background:isT?C.accent:count>0?`${C.accent}18`:C.card,
+                    border:`1px solid ${count>0?C.accent:C.border}`,
+                    borderRadius:10,padding:"7px 2px",textAlign:"center",minHeight:50,
+                    cursor:count>0?"pointer":"default",opacity:isPast&&!count?0.3:1,transition:"all 0.15s"}}>
+                  <div style={{fontSize:13,fontWeight:isT?800:500,color:isT?"#fff":C.text}}>{d}</div>
+                  {count>0&&<div style={{display:"flex",justifyContent:"center",gap:2,marginTop:4,flexWrap:"wrap"}}>
+                    {Array(Math.min(count,3)).fill(null).map((_,ci)=><div key={ci} style={{width:5,height:5,borderRadius:"50%",background:isT?"#fff":C.orange}}/>)}
+                    {count>3&&<span style={{fontSize:8,color:isT?"#fff":C.orange}}>+{count-3}</span>}
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{marginTop:16,display:"flex",gap:16,justifyContent:"center"}}>
+            {[[C.accent,"Today"],[C.accent+"30","Has follow-ups"],[C.orange,"Dot = scheduled"]].map(([c,l])=>(
+              <span key={l} style={{fontSize:10,color:C.text3,display:"flex",alignItems:"center",gap:4}}>
+                <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:c}}/>
+                {l}
+              </span>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FOLLOW-UP FORM  — pulls from call history
+    // ═══════════════════════════════════════════════════════════════════
+    function FollowupForm({ settings, callHistory, prefill, onSave, onClose, isReschedule }) {
+      const [step, setStep]       = useState(isReschedule||prefill ? 1 : 0);
+      const [callSearch, setCallSearch] = useState("");
+      const [form, setForm]       = useState({
+        name:      prefill?.name     || "",
+        phone:     prefill?.phone    || "",
+        lastCalled:prefill?.lastCalled || "",
+        location:  prefill?.location || "",
+        interested:"", note:"", scheduleDate:"", scheduleTime:"", priority:"Medium",
+      });
+      const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+      // Deduplicate call history — one entry per phone number (most recent call)
+      const seen = new Set();
+      const uniqueCalls = [];
+      callHistory.forEach(c => {
+        if(!seen.has(c.phone)) { seen.add(c.phone); uniqueCalls.push(c); }
+      });
+
+      const filteredCalls = uniqueCalls.filter(c =>
+        c.name.toLowerCase().includes(callSearch.toLowerCase()) || c.phone.includes(callSearch)
+      );
+
+      const selectFromCall = c => {
+        setForm(f=>({...f, name:c.name, phone:c.phone, location:c.location||"", lastCalled:c.callTime.split("T")[0]}));
+        setStep(1);
+      };
+
+      const handleSubmit = () => {
+        if(!form.name||!form.phone||!form.scheduleDate) return;
+        onSave(form);
+      };
+
+      const tcol  = t => t==="missed"?C.red:t==="incoming"?C.green:C.accent;
+      const ticon = t => t==="missed"?"📵":t==="incoming"?"📲":"📤";
+
+      return (
+        <Modal onClose={onClose} title={isReschedule?"Reschedule":step===0?"Pick Contact":"Schedule Details"}>
+
+          {/* ── STEP 0: Contact picker ── */}
+          {step===0 && (
+            <div className="anim-up">
+              <div style={{position:"relative",marginBottom:10}}>
+                <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:13,color:C.text3,pointerEvents:"none"}}>🔍</span>
+                <input value={callSearch} onChange={e=>setCallSearch(e.target.value)}
+                  placeholder="Search your recent calls..."
+                  style={{...IS,paddingLeft:34,marginBottom:0}}/>
+              </div>
+
+              <div style={{fontSize:10,color:C.text3,fontWeight:700,letterSpacing:"0.6px",textTransform:"uppercase",marginBottom:8}}>
+                Recent Calls · {filteredCalls.length} contacts
+              </div>
+
+              {/* Scrollable call list */}
+              <div style={{maxHeight:280,overflowY:"auto",background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden",marginBottom:14}}>
+                {filteredCalls.length===0 ? (
+                  <div style={{textAlign:"center",padding:"24px",color:C.text3,fontSize:12}}>No calls match</div>
+                ) : filteredCalls.map((c,i)=>(
+                  <div key={c.id} onClick={()=>selectFromCall(c)} className="tap"
+                    style={{display:"flex",alignItems:"center",gap:12,padding:"12px 13px",
+                      borderBottom:i===filteredCalls.length-1?"none":`1px solid ${C.border}`,cursor:"pointer"}}>
+                    {/* Avatar */}
+                    <div style={{width:40,height:40,borderRadius:10,background:`${tcol(c.type)}18`,
+                      display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
+                      fontSize:16,fontWeight:800,color:tcol(c.type),position:"relative"}}>
+                      {c.name==="Unknown"?"?":c.name[0]}
+                      <span style={{position:"absolute",bottom:-4,right:-4,fontSize:11,background:C.surface,borderRadius:5,padding:"0 1px",lineHeight:1.6}}>{ticon(c.type)}</span>
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:13,color:c.type==="missed"?C.red:C.text}}>{c.name}</div>
+                      <div style={{fontSize:10,color:C.text3,marginTop:1}}>
+                        {c.phone}{c.location&&<span> · {c.location}</span>}
+                      </div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontSize:12}}>{ticon(c.type)}</div>
+                      <div style={{fontSize:9,color:C.text3,marginTop:2}}>{fmtCallTime(c.callTime)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Divider */}
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <div style={{flex:1,height:1,background:C.border}}/>
+                <span style={{fontSize:10,color:C.text3,fontWeight:700}}>OR TYPE MANUALLY</span>
+                <div style={{flex:1,height:1,background:C.border}}/>
+              </div>
+              <div style={{display:"flex",gap:8,marginBottom:10}}>
+                <input placeholder="Full Name" value={form.name} onChange={e=>set("name",e.target.value)} style={{...IS,flex:1}}/>
+                <input placeholder="Phone No." value={form.phone} onChange={e=>set("phone",e.target.value)} style={{...IS,flex:1}}/>
+              </div>
+              <Btn label="Continue →" color={C.accent} disabled={!form.name||!form.phone} onClick={()=>setStep(1)}/>
+            </div>
+          )}
+
+          {/* ── STEP 1: Schedule details ── */}
+          {step===1 && (
+            <div className="anim-up">
+              {/* Selected contact card */}
+              <div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}30`,borderRadius:12,padding:"11px 13px",marginBottom:14,display:"flex",alignItems:"center",gap:11}}>
+                <div style={{width:42,height:42,borderRadius:11,background:`${C.accent}25`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,fontWeight:800,color:C.accent,flexShrink:0}}>
+                  {form.name?form.name[0].toUpperCase():"?"}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:800,fontSize:15}}>{form.name||"—"}</div>
+                  <div style={{fontSize:11,color:C.text3,marginTop:1}}>
+                    📱 {form.phone}
+                    {form.lastCalled&&<span> · Last called {fmt(form.lastCalled)}</span>}
+                  </div>
+                </div>
+                {!isReschedule && (
+                  <button onClick={()=>setStep(0)} className="tap"
+                    style={{background:C.card2,border:`1px solid ${C.border}`,color:C.text2,borderRadius:8,padding:"5px 9px",fontSize:11,fontWeight:700}}>
+                    ← Back
+                  </button>
+                )}
+              </div>
+
+              <FL l="Follow-up Date &amp; Time">
+                <div style={{display:"flex",gap:8}}>
+                  <input type="date" value={form.scheduleDate} onChange={e=>set("scheduleDate",e.target.value)} style={{...IS,flex:1}}/>
+                  <input type="time" value={form.scheduleTime} onChange={e=>set("scheduleTime",e.target.value)} style={{...IS,flex:1}}/>
+                </div>
+              </FL>
+
+              <FL l="Location">
+                <input placeholder="City, Area or Address" value={form.location} onChange={e=>set("location",e.target.value)} style={IS}/>
+              </FL>
+
+              <FL l="Interested In">
+                <select value={form.interested} onChange={e=>set("interested",e.target.value)} style={IS}>
+                  <option value="">— Select category —</option>
+                  {settings.interestedOptions.map(o=><option key={o} value={o}>{o}</option>)}
+                </select>
+              </FL>
+
+              <FL l="Priority">
+                <div style={{display:"flex",gap:8}}>
+                  {["Low","Medium","High"].map(p=>(
+                    <button key={p} onClick={()=>set("priority",p)} className="tap"
+                      style={{flex:1,borderRadius:10,padding:"10px",fontSize:13,fontWeight:700,
+                        background:form.priority===p?(p==="High"?C.red:p==="Medium"?C.orange:C.green):C.card,
+                        color:form.priority===p?"#fff":C.text3,
+                        border:`1px solid ${form.priority===p?"transparent":C.border}`,transition:"all 0.18s"}}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </FL>
+
+              <FL l="Follow-up Note">
+                <textarea placeholder="Requirements, context, what to discuss..." value={form.note} onChange={e=>set("note",e.target.value)}
+                  rows={3} style={{...IS,resize:"none",lineHeight:1.6}}/>
+              </FL>
+
+              <Btn label={isReschedule?"🔄 Reschedule":"💾 Save Follow-up"} color={C.accent} disabled={!form.scheduleDate} onClick={handleSubmit}/>
+            </div>
+          )}
+        </Modal>
+      );
+    }
+
+    // ─── FU Detail ───────────────────────────────────────────────────────
+    function FUDetail({ fu:f, onClose, onDone, onReschedule, onDelete }) {
+      const [confirmDel, setConfirmDel] = useState(false);
+      return (
+        <Modal onClose={onClose} title="Follow-up Details">
+          <div style={{background:`linear-gradient(135deg,${C.accent}18,${C.card})`,borderRadius:14,padding:14,marginBottom:14,border:`1px solid ${C.accent}30`}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+              <div style={{width:50,height:50,borderRadius:14,background:`${C.accent}25`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:C.accent}}>
+                {f.name[0]}
+              </div>
+              <div>
+                <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:20,fontWeight:800}}>{f.name}</div>
+                <div style={{fontSize:12,color:C.text3,marginTop:2}}>📱 {f.phone}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <a href={`tel:${f.phone}`} className="tap"
+                style={{flex:1,background:C.accent,color:"#fff",borderRadius:10,padding:"11px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                📞 Call
+              </a>
+              <a href={`https://wa.me/91${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
+                target="_blank" rel="noreferrer" className="tap"
+                style={{flex:1,background:C.wa,color:"#fff",borderRadius:10,padding:"11px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                💬 WhatsApp
+              </a>
+            </div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+            <DR i="📅" l="Scheduled" v={`${fmt(f.scheduleDate)}${f.scheduleTime?" at "+fmtT(f.scheduleTime):""}`}/>
+            {f.lastCalled  && <DR i="🕐" l="Last Contacted" v={fmt(f.lastCalled)}/>}
+            {f.location    && <DR i="📍" l="Location" v={f.location}/>}
+            {f.interested  && <DR i="🏷️" l="Interested In" v={f.interested} accent/>}
+            {f.priority    && <DR i="⚡" l="Priority" v={f.priority}/>}
+            {f.rescheduled && <DR i="🔄" l="Status" v="Rescheduled"/>}
+          </div>
+          {f.note && (
+            <div style={{background:C.surface,borderRadius:10,padding:12,marginBottom:14,borderLeft:`3px solid ${C.accent}`}}>
+              <div style={{fontSize:9,color:C.text3,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:5}}>Note</div>
+              <div style={{fontSize:13,color:C.text2,lineHeight:1.65}}>{f.note}</div>
+            </div>
+          )}
+          {!f.done && (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <Btn label="✅ Mark Done" color={C.green} onClick={onDone}/>
+              <button className="tap" onClick={onReschedule}
+                style={{background:`${C.orange}18`,color:C.orange,border:`1px solid ${C.orange}40`,borderRadius:10,padding:12,fontWeight:700,fontSize:13,width:"100%"}}>
+                ✅ Done + Reschedule
+              </button>
+            </div>
+          )}
+          <div style={{borderTop:`1px solid ${C.border}`,marginTop:12,paddingTop:12}}>
+            {!confirmDel
+              ? <button onClick={()=>setConfirmDel(true)} className="tap" style={{background:"transparent",color:C.text3,fontSize:12,width:"100%",padding:"6px"}}>🗑️ Delete</button>
+              : <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>setConfirmDel(false)} className="tap"
+                    style={{flex:1,background:C.card,border:`1px solid ${C.border}`,color:C.text2,borderRadius:10,padding:10,fontWeight:600,fontSize:12}}>Cancel</button>
+                  <button onClick={onDelete} className="tap"
+                    style={{flex:1,background:C.red,color:"#fff",border:"none",borderRadius:10,padding:10,fontWeight:700,fontSize:12}}>Delete</button>
+                </div>}
+          </div>
+        </Modal>
+      );
+    }
+
+    const DR = ({i,l,v,accent}) => (
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",background:C.card,borderRadius:10}}>
+        <span style={{fontSize:15}}>{i}</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:9,color:C.text3,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px"}}>{l}</div>
+          <div style={{fontSize:13,color:accent?C.accent2:C.text,fontWeight:accent?700:500,marginTop:1}}>{v}</div>
+        </div>
+      </div>
+    );
+
+    function MultiModal({ fus, onClose, onPick }) {
+      return (
+        <Modal onClose={onClose} title={`${fus.length} Follow-ups`}>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {fus.map(f=>(
+              <div key={f.id} onClick={()=>onPick(f)} className="tap"
+                style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"13px 14px",cursor:"pointer"}}>
+                <div style={{fontWeight:700,fontSize:14}}>{f.name}</div>
+                <div style={{fontSize:11,color:C.text3,marginTop:2}}>{f.phone}{f.interested?` · ${f.interested}`:""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SETTINGS VIEW
+    // ═══════════════════════════════════════════════════════════════════
+    function SettingsView({ settings, setSettings, followups, showToast }) {
+      const [newOpt, setNewOpt] = useState("");
+      const addOpt = () => {
+        if(!newOpt.trim()) return;
+        setSettings(s=>({...s,interestedOptions:[...s.interestedOptions,newOpt.trim()]}));
+        setNewOpt(""); showToast("Category added ✓");
+      };
+      const removeOpt = o => setSettings(s=>({...s,interestedOptions:s.interestedOptions.filter(x=>x!==o)}));
+      const exportData = () => {
+        const blob = new Blob([JSON.stringify({followups,settings},null,2)],{type:"application/json"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href=url; a.download="followpro-backup.json"; a.click();
+        URL.revokeObjectURL(url);
+        showToast("Exported ✓");
+      };
+      const done = followups.filter(f=>f.done).length;
+      const total = followups.length;
+
+      return (
+        <div style={{padding:"14px"}}>
+          {/* Stats */}
+          <div style={{background:`linear-gradient(135deg,${C.accent}20,${C.purple}12)`,border:`1px solid ${C.accent}30`,borderRadius:14,padding:16,marginBottom:14,display:"flex",gap:0}}>
+            {[{l:"Total",n:total,c:C.text},{l:"Done",n:done,c:C.green},{l:"Active",n:total-done,c:C.accent}].map(({l,n,c},i,arr)=>(
+              <div key={l} style={{flex:1,textAlign:"center",borderRight:i<arr.length-1?`1px solid ${C.border}`:"none",paddingRight:i<arr.length-1?0:0}}>
+                <div style={{fontSize:26,fontWeight:800,color:c,fontFamily:"'Space Grotesk',sans-serif"}}>{n}</div>
+                <div style={{fontSize:10,color:C.text3,fontWeight:700,marginTop:2}}>{l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Categories */}
+          <SC title="Categories" sub="Your 'Interested In' dropdown options">
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
+              {settings.interestedOptions.map(o=>(
+                <div key={o} style={{background:`${C.accent}18`,border:`1px solid ${C.accent}30`,borderRadius:20,padding:"5px 12px",fontSize:12,color:C.accent2,display:"flex",alignItems:"center",gap:7,fontWeight:600}}>
+                  {o}
+                  <button onClick={()=>removeOpt(o)} className="tap"
+                    style={{background:"none",color:C.text3,fontSize:16,lineHeight:1}}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <input value={newOpt} onChange={e=>setNewOpt(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addOpt()}
+                placeholder="New category…" style={{...IS,flex:1}}/>
+              <button onClick={addOpt} className="tap"
+                style={{background:C.accent,color:"#fff",borderRadius:10,padding:"9px 14px",fontWeight:700,fontSize:13}}>Add</button>
+            </div>
+          </SC>
+
+          {/* Data */}
+          <SC title="Data &amp; Backup">
+            <Btn label="📥 Export All Data (JSON)" color={C.card} onClick={exportData} style={{border:`1px solid ${C.border}`,color:C.text2}}/>
+          </SC>
+
+          {/* About */}
+          <SC title="About FollowPro">
+            <div style={{fontSize:12,color:C.text3,lineHeight:2.2}}>
+              📞 Schedule follow-ups from call history<br/>
+              📋 Priority-based task management<br/>
+              📅 Visual calendar with highlights<br/>
+              💬 One-tap Call &amp; WhatsApp<br/>
+              💾 All data stored locally on device<br/>
+              <span style={{color:C.accent,fontWeight:700}}>v2.0 · FollowPro PWA</span>
+            </div>
+          </SC>
+        </div>
+      );
+    }
+
+    const SC = ({title,sub,children}) => (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:sub?3:10}}>{title}</div>
+        {sub&&<div style={{fontSize:11,color:C.text3,marginBottom:10}}>{sub}</div>}
+        {children}
+      </div>
+    );
+
+    // ─── Modal ────────────────────────────────────────────────────────────
+    function Modal({ onClose, title, children }) {
+      useEffect(()=>{ document.body.style.overflow="hidden"; return()=>{ document.body.style.overflow=""; }; },[]);
+      return (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}}
+          onClick={e=>e.target===e.currentTarget&&onClose()}>
+          <div className="anim-slide"
+            style={{background:C.surface,borderRadius:"20px 20px 0 0",padding:`16px 16px calc(20px + env(safe-area-inset-bottom))`,
+              width:"100%",maxWidth:520,maxHeight:"94vh",overflowY:"auto",border:`1px solid ${C.border}`}}>
+            <div style={{width:36,height:4,background:C.border2,borderRadius:2,margin:"0 auto 14px"}}/>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+              <div style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:800,fontSize:17}}>{title}</div>
+              <button onClick={onClose} className="tap"
+                style={{background:C.card2,border:`1px solid ${C.border}`,color:C.text3,borderRadius:"50%",width:30,height:30,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Atoms ────────────────────────────────────────────────────────────
+    const IS = { width:"100%", background:C.card2, border:`1px solid ${C.border2}`, borderRadius:10, padding:"11px 12px", color:C.text, fontSize:14, fontFamily:"inherit" };
+    const FL = ({l,children}) => (
+      <div style={{marginBottom:13}}>
+        <div style={{fontSize:10,color:C.text3,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.7px",marginBottom:7}}>{l}</div>
+        {children}
+      </div>
+    );
+    function Btn({ label, color, onClick, disabled, style:extra={} }) {
+      return (
+        <button onClick={onClick} disabled={disabled} className="tap"
+          style={{background:color,color:color===C.card?"inherit":"#fff",borderRadius:10,padding:"13px",fontWeight:700,
+            fontSize:14,width:"100%",border:"none",opacity:disabled?0.45:1,transition:"all 0.2s",...extra}}>
+          {label}
+        </button>
+      );
+    }
+
+    // ─── Mount ────────────────────────────────────────────────────────────
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+
+    setTimeout(()=>{
+      const s = document.getElementById("splash");
+      if(s){ s.classList.add("hide"); setTimeout(()=>s.remove(),500); }
+    }, 1800);
+  </script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(r => console.log('SW:', r.scope))
+          .catch(e => console.log('SW err:', e));
+      });
+    }
+  </script>
+</body>
+</html>
