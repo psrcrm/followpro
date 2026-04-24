@@ -205,7 +205,9 @@
       const clearCallHistory = () => {
         setCallHistory([]);
         showToast("Call history cleared","err");
-      }; setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
+      };
+
+      const markDone = id => { setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
       const markDoneReschedule = fu => { setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f)); setSelectedFU(null); setRescheduleId(fu.id); setPrefill(null); setShowForm(true); };
       const deleteFU = id => { setFollowups(p=>p.filter(f=>f.id!==id)); setSelectedFU(null); showToast("Deleted","err"); };
 
