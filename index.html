@@ -74,7 +74,38 @@
 
     const DEFAULT_SETTINGS = {
       interestedOptions: ["Plot","Insurance","Apartment","Villa","Commercial","Farmhouse","Loan"],
+      countryCode: "91",
     };
+
+    // ── Storage helpers — quota-safe ──────────────────────────────────────
+    const SCHEMA_VERSION = 1;
+    const load = (k, fb) => {
+      try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; }
+      catch { return fb; }
+    };
+    const save = (k, v) => {
+      try {
+        localStorage.setItem(k, JSON.stringify(v));
+        return true;
+      } catch(e) {
+        // QuotaExceededError — notify app
+        if(e.name === 'QuotaExceededError' || e.code === 22) {
+          window.__storageQuotaExceeded = true;
+        }
+        return false;
+      }
+    };
+    // Migrate followup schema: ensure all entries have required fields
+    const migrateFollowups = arr => arr.map(f => ({
+      priority:'Medium', interested:'', note:'', location:'', scheduleTime:'',
+      ...f,
+      id: f.id || Date.now() + Math.random(),
+    }));
+    const migrateContacts = arr => arr.map(c => ({
+      duration:0, type:'incoming', location:'',
+      ...c,
+      id: c.id || `c_${Date.now() + Math.random()}`,
+    }));
 
     const fmt  = d => { if(!d) return ""; return new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); };
     const fmtT = t => { if(!t) return ""; const [h,m]=t.split(":"); const hr=parseInt(h); return `${hr%12||12}:${m} ${hr>=12?"PM":"AM"}`; };
@@ -82,8 +113,6 @@
     const daysInMonth = (y,m) => new Date(y,m+1,0).getDate();
     const firstDay    = (y,m) => new Date(y,m,1).getDay();
     const toDS = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-    const load = (k,fb) => { try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fb; }catch{ return fb; } };
-    const save = (k,v) => { try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} };
 
     const relTime = ds => {
       const today = todayStr();
@@ -141,18 +170,39 @@
     // ═══════════════════════════════════════════════════════════════════
     function App() {
       const [tab, setTab]             = useState("calls");
-      const [followups, setFollowups] = useState(() => load("fp_followups", []));
-      const [settings, setSettings]   = useState(() => load("fp_settings", DEFAULT_SETTINGS));
-      const [callHistory, setCallHistory] = useState(() => load("fp_callhistory", []));
+      const [followups, setFollowups] = useState(() => migrateFollowups(load("fp_followups", [])));
+      const [settings, setSettings]   = useState(() => ({...DEFAULT_SETTINGS, ...load("fp_settings", {})}));
+      const [callHistory, setCallHistory] = useState(() => migrateContacts(load("fp_callhistory", [])));
       const [showForm, setShowForm]       = useState(false);
       const [prefill, setPrefill]         = useState(null);
       const [selectedFU, setSelectedFU]   = useState(null);
       const [rescheduleId, setRescheduleId] = useState(null);
       const [toast, setToast]             = useState(null);
+      const [storageWarn, setStorageWarn] = useState(false);
+      const [notifDenied, setNotifDenied] = useState(false);
+      const [showRestore, setShowRestore] = useState(false);
 
-      useEffect(() => save("fp_followups", followups), [followups]);
-      useEffect(() => save("fp_settings",  settings),  [settings]);
-      useEffect(() => save("fp_callhistory", callHistory), [callHistory]);
+      // ── Persist to localStorage with quota check ──
+      useEffect(() => {
+        if(!save("fp_followups", followups)) setStorageWarn(true);
+      }, [followups]);
+      useEffect(() => {
+        if(!save("fp_settings", settings)) setStorageWarn(true);
+      }, [settings]);
+      useEffect(() => {
+        if(!save("fp_callhistory", callHistory)) setStorageWarn(true);
+      }, [callHistory]);
+
+      // ── Check quota exceeded flag set by save() ──
+      useEffect(() => {
+        const interval = setInterval(() => {
+          if(window.__storageQuotaExceeded) {
+            window.__storageQuotaExceeded = false;
+            setStorageWarn(true);
+          }
+        }, 5000);
+        return () => clearInterval(interval);
+      }, []);
 
       const showToast = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),2800); };
 
@@ -218,62 +268,38 @@
       };
 
 
-      // ── Notifications: request permission + schedule reminders ──
+      // ── Sync country code globally so child components can use it ──
       useEffect(() => {
-        if(!("Notification" in window) || !("serviceWorker" in navigator)) return;
-        // Request permission silently on first pending follow-up
-        if(pendingTotal > 0 && Notification.permission === "default") {
-          Notification.requestPermission();
-        }
-      }, [pendingTotal]);
+        window.__cc = settings.countryCode || "91";
+      }, [settings.countryCode]);
+      const sendToSW = useCallback((msg) => {
+        if(!('serviceWorker' in navigator)) return;
+        navigator.serviceWorker.ready.then(reg => {
+          if(reg.active) reg.active.postMessage(msg);
+        }).catch(()=>{});
+      }, []);
 
       useEffect(() => {
-        if(Notification.permission !== "granted") return;
-        // Schedule a notification for each today/overdue follow-up that has a time set
-        const now = new Date();
-        const today = todayStr();
-        followups.forEach(f => {
-          if(f.done || !f.scheduleTime) return;
-          if(f.scheduleDate !== today) return;
-          const [h,m] = f.scheduleTime.split(":").map(Number);
-          const notifTime = new Date(); notifTime.setHours(h,m,0,0);
-          const delay = notifTime - now;
-          if(delay < 0 || delay > 86400000) return;
-          // Schedule via setTimeout → SW push (best effort for PWA)
-          setTimeout(() => {
-            if(Notification.permission === "granted") {
-              navigator.serviceWorker.ready.then(reg => {
-                reg.showNotification(`📞 Follow up: ${f.name}`, {
-                  body: `${f.interested ? f.interested + " · " : ""}${f.note || "Time to follow up!"}`,
-                  icon: "./icons/icon-192.png",
-                  badge: "./icons/icon-192.png",
-                  tag: `fu-${f.id}`,
-                  renotify: true,
-                  data: { url: "./" },
-                  actions: [
-                    { action:"call",  title:"📞 Call" },
-                    { action:"done",  title:"✅ Done" },
-                  ],
-                });
-              });
-            }
-          }, delay);
-        });
-      }, [followups]);
+        if(Notification.permission !== 'granted') return;
+        const pending = followups.filter(f => !f.done && f.scheduleTime && f.scheduleDate);
+        sendToSW({ type:'SCHEDULE_NOTIFICATIONS', followups: pending });
+      }, [followups, sendToSW]);
 
-      // ── Notification permission request button (shown in header) ──
-      const [notifDenied, setNotifDenied] = useState(false);
+      // ── Request notification permission ──
       const requestNotif = async () => {
+        if(!('Notification' in window)) { showToast('Notifications not supported','err'); return; }
         const perm = await Notification.requestPermission();
-        if(perm === "denied") setNotifDenied(true);
-        else showToast(perm === "granted" ? "Reminders enabled 🔔" : "Permission dismissed");
+        if(perm === 'granted') {
+          showToast('Reminders enabled 🔔');
+          const pending = followups.filter(f => !f.done && f.scheduleTime);
+          sendToSW({ type:'SCHEDULE_NOTIFICATIONS', followups: pending });
+        } else {
+          setNotifDenied(perm === 'denied');
+          showToast(perm === 'denied' ? 'Blocked in browser settings' : 'Permission dismissed');
+        }
       };
 
-      const clearCallHistory = () => {
-        setCallHistory([]);
-        showToast("Contacts cleared","err");
-      };
-
+      const clearCallHistory = () => { setCallHistory([]); showToast("Contacts cleared","err"); };
       const renameContact = (id, newName) => {
         setCallHistory(prev => prev.map(c => c.id===id ? {...c, name:newName} : c));
         showToast("Name updated ✓");
@@ -340,12 +366,26 @@
             )}
           </div>
 
-          {/* ── Main content ── */}
+          {/* ── Storage quota warning ── */}
+          {storageWarn && (
+            <div style={{background:`${C.red}20`,border:`1px solid ${C.red}50`,
+              padding:"10px 14px",display:"flex",gap:10,alignItems:"center",zIndex:60,position:"relative"}}>
+              <span style={{fontSize:18,flexShrink:0}}>⚠️</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.red}}>Storage almost full — data may not be saving</div>
+                <div style={{fontSize:11,color:C.text3,marginTop:1}}>Export a backup now to avoid losing data</div>
+              </div>
+              <button className="tap" onClick={()=>setShowRestore(true)}
+                style={{background:C.red,color:"#fff",borderRadius:8,padding:"6px 10px",fontSize:11,fontWeight:700,border:"none",flexShrink:0}}>
+                Backup
+              </button>
+            </div>
+          )}
           <div style={{flex:1,overflowY:"auto",paddingBottom:76}}>
             {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall} onRenameContact={renameContact}/>}
             {tab==="schedule" && <ScheduleView followups={followups} today={today} onSelect={setSelectedFU} counts={counts}/>}
             {tab==="calendar" && <CalendarView followups={followups} today={today} onSelectFU={setSelectedFU}/>}
-            {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} callHistory={callHistory} showToast={showToast} onClearCalls={clearCallHistory}/>}
+            {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} callHistory={callHistory} showToast={showToast} onClearCalls={clearCallHistory} onBackup={()=>setShowRestore(true)}/>}
           </div>
 
           {/* ── Tab Bar ── */}
@@ -377,6 +417,20 @@
           )}
 
           {/* ── Modals ── */}
+          {showRestore && (
+            <BackupRestoreModal
+              followups={followups} settings={settings} callHistory={callHistory}
+              onRestore={(data)=>{
+                if(data.followups)   setFollowups(migrateFollowups(data.followups));
+                if(data.settings)    setSettings(s=>({...s,...data.settings}));
+                if(data.callHistory) setCallHistory(migrateContacts(data.callHistory));
+                showToast(`Restored ${(data.followups||[]).length} follow-ups ✓`);
+                setStorageWarn(false);
+                setShowRestore(false);
+              }}
+              onClose={()=>setShowRestore(false)}
+            />
+          )}
           {showForm && (
             <FollowupForm
               settings={settings} callHistory={callHistory} prefill={prefill}
@@ -556,7 +610,7 @@
                             textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
                           📞 Call
                         </a>
-                        <a href={`https://wa.me/91${c.phone}`} target="_blank" rel="noreferrer" className="tap"
+                        <a href={`https://wa.me/${window.__cc||"91"}${c.phone}`} target="_blank" rel="noreferrer" className="tap"
                           style={{flex:1,background:`${C.wa}15`,color:C.wa,border:`1px solid ${C.wa}40`,
                             borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
                             textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
@@ -691,7 +745,7 @@
                   textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
                 📞 Call
               </a>
-              <a href={`https://wa.me/91${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
+              <a href={`https://wa.me/${window.__cc||"91"}${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
                 target="_blank" rel="noreferrer" className="tap"
                 style={{flex:1,background:`${C.wa}15`,color:C.wa,border:`1px solid ${C.wa}35`,
                   borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
@@ -1006,7 +1060,7 @@
                 style={{flex:1,background:C.accent,color:"#fff",borderRadius:10,padding:"11px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
                 📞 Call
               </a>
-              <a href={`https://wa.me/91${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
+              <a href={`https://wa.me/${window.__cc||"91"}${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
                 target="_blank" rel="noreferrer" className="tap"
                 style={{flex:1,background:C.wa,color:"#fff",borderRadius:10,padding:"11px",textAlign:"center",fontSize:13,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
                 💬 WhatsApp
@@ -1077,7 +1131,7 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    function SettingsView({ settings, setSettings, followups, callHistory, showToast, onClearCalls }) {
+    function SettingsView({ settings, setSettings, followups, callHistory, showToast, onClearCalls, onBackup }) {
       const [newOpt, setNewOpt] = useState("");
       const addOpt = () => {
         if(!newOpt.trim()) return;
@@ -1085,27 +1139,42 @@
         setNewOpt(""); showToast("Category added ✓");
       };
       const removeOpt = o => setSettings(s=>({...s,interestedOptions:s.interestedOptions.filter(x=>x!==o)}));
-      const exportData = () => {
-        const blob = new Blob([JSON.stringify({followups,settings,callHistory},null,2)],{type:"application/json"});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href=url; a.download="followpro-backup.json"; a.click();
-        URL.revokeObjectURL(url);
-        showToast("Exported ✓");
-      };
-      const done = followups.filter(f=>f.done).length;
+
+      // Storage usage estimate
+      const [storageUsed, setStorageUsed] = useState(null);
+      useEffect(() => {
+        try {
+          const bytes = JSON.stringify({followups,settings,callHistory}).length;
+          setStorageUsed((bytes/1024).toFixed(1));
+        } catch{}
+      }, []);
+
+      const done  = followups.filter(f=>f.done).length;
       const total = followups.length;
+      const cc    = settings.countryCode || "91";
 
       return (
         <div style={{padding:"14px"}}>
           {/* Stats */}
           <div style={{background:`linear-gradient(135deg,${C.accent}20,${C.purple}12)`,border:`1px solid ${C.accent}30`,borderRadius:14,padding:16,marginBottom:14,display:"flex",gap:0}}>
-            {[{l:"Total",n:total,c:C.text},{l:"Done",n:done,c:C.green},{l:"Active",n:total-done,c:C.accent}].map(({l,n,c},i,arr)=>(
-              <div key={l} style={{flex:1,textAlign:"center",borderRight:i<arr.length-1?`1px solid ${C.border}`:"none",paddingRight:i<arr.length-1?0:0}}>
-                <div style={{fontSize:26,fontWeight:800,color:c,fontFamily:"'Space Grotesk',sans-serif"}}>{n}</div>
-                <div style={{fontSize:10,color:C.text3,fontWeight:700,marginTop:2}}>{l}</div>
+            {[{l:"Total",n:total,c:C.text},{l:"Done",n:done,c:C.green},{l:"Active",n:total-done,c:C.accent},{l:"Contacts",n:callHistory.length,c:C.purple}].map(({l,n,c},i,arr)=>(
+              <div key={l} style={{flex:1,textAlign:"center",borderRight:i<arr.length-1?`1px solid ${C.border}`:"none"}}>
+                <div style={{fontSize:22,fontWeight:800,color:c,fontFamily:"'Space Grotesk',sans-serif"}}>{n}</div>
+                <div style={{fontSize:9,color:C.text3,fontWeight:700,marginTop:2}}>{l}</div>
               </div>
             ))}
           </div>
+
+          {/* Country Code */}
+          <SC title="WhatsApp Country Code" sub="Used for WhatsApp links (e.g. 91 for India, 1 for USA)">
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:13,color:C.text2,fontWeight:600}}>+</span>
+              <input value={cc} onChange={e=>setSettings(s=>({...s,countryCode:e.target.value.replace(/\D/,"")}))}
+                placeholder="91" maxLength={4} type="tel"
+                style={{...IS,width:80,textAlign:"center",fontSize:16,fontWeight:700}}/>
+              <div style={{fontSize:11,color:C.text3,lineHeight:1.5}}>India = 91 · USA = 1<br/>UK = 44 · UAE = 971</div>
+            </div>
+          </SC>
 
           {/* Categories */}
           <SC title="Categories" sub="Your 'Interested In' dropdown options">
@@ -1113,8 +1182,7 @@
               {settings.interestedOptions.map(o=>(
                 <div key={o} style={{background:`${C.accent}18`,border:`1px solid ${C.accent}30`,borderRadius:20,padding:"5px 12px",fontSize:12,color:C.accent2,display:"flex",alignItems:"center",gap:7,fontWeight:600}}>
                   {o}
-                  <button onClick={()=>removeOpt(o)} className="tap"
-                    style={{background:"none",color:C.text3,fontSize:16,lineHeight:1}}>×</button>
+                  <button onClick={()=>removeOpt(o)} className="tap" style={{background:"none",color:C.text3,fontSize:16,lineHeight:1}}>×</button>
                 </div>
               ))}
             </div>
@@ -1126,32 +1194,170 @@
             </div>
           </SC>
 
-          {/* Call Log / Saved Contacts */}
-          <SC title="Saved Contacts" sub={`${callHistory.length} contacts saved from previous picks`}>
+          {/* Saved Contacts */}
+          <SC title="Saved Contacts" sub={`${callHistory.length} contacts saved`}>
             <div style={{fontSize:12,color:C.text2,marginBottom:10,lineHeight:1.6}}>
-              Contacts are saved automatically when you pick them or schedule a follow-up.
-              They appear in "Previously picked" for quick re-scheduling.
+              Auto-saved when you pick from contacts or schedule a follow-up.
             </div>
             <Btn label="🗑️ Clear Saved Contacts" color={C.card} onClick={()=>{ if(window.confirm("Clear all saved contacts?")) onClearCalls(); }} style={{border:`1px solid ${C.border}`,color:C.red}}/>
           </SC>
 
-          {/* Data */}
-          <SC title="Data &amp; Backup">
-            <Btn label="📥 Export All Data (JSON)" color={C.card} onClick={exportData} style={{border:`1px solid ${C.border}`,color:C.text2}}/>
+          {/* Data & Backup */}
+          <SC title="Data &amp; Backup" sub={storageUsed ? `~${storageUsed} KB used of 5 MB limit` : ""}>
+            <div style={{background:`${C.orange}12`,border:`1px solid ${C.orange}30`,borderRadius:10,padding:"10px 12px",marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.orange,marginBottom:3}}>⚠️ Important</div>
+              <div style={{fontSize:11,color:C.text3,lineHeight:1.7}}>
+                Data is stored on <strong style={{color:C.text2}}>this device only</strong>. Clearing Chrome site data or uninstalling the app will erase everything. Export a backup regularly.
+              </div>
+            </div>
+            <Btn label="📤 Export Backup (JSON)" color={C.accent} onClick={onBackup} style={{marginBottom:8}}/>
+            <Btn label="📥 Restore from Backup" color={C.card} onClick={onBackup} style={{border:`1px solid ${C.border}`,color:C.text2}}/>
           </SC>
 
           {/* About */}
           <SC title="About FollowPro">
             <div style={{fontSize:12,color:C.text3,lineHeight:2.2}}>
-              📞 Schedule follow-ups from call history<br/>
+              📞 One-tap contact pick &amp; follow-up scheduling<br/>
               📋 Priority-based task management<br/>
               📅 Visual calendar with highlights<br/>
               💬 One-tap Call &amp; WhatsApp<br/>
-              💾 All data stored locally on device<br/>
-              <span style={{color:C.accent,fontWeight:700}}>v2.0 · FollowPro PWA</span>
+              🔔 Reminders via notifications<br/>
+              💾 All data stored locally — your data, your device<br/>
+              <span style={{color:C.accent,fontWeight:700}}>v3.0 · FollowPro PWA</span>
             </div>
           </SC>
         </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BACKUP + RESTORE MODAL
+    // ═══════════════════════════════════════════════════════════════════
+    function BackupRestoreModal({ followups, settings, callHistory, onRestore, onClose }) {
+      const [mode, setMode]       = useState(""); // "export"|"import"
+      const [error, setError]     = useState("");
+      const [preview, setPreview] = useState(null);
+      const fileRef               = useRef();
+
+      const doExport = () => {
+        const payload = {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          followups, settings, callHistory,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url;
+        a.download = `followpro-backup-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const handleFile = async e => {
+        const file = e.target.files[0];
+        if(!file) return;
+        setError(""); setPreview(null);
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          if(!data.followups && !data.callHistory) throw new Error("Not a valid FollowPro backup file");
+          setPreview(data);
+        } catch(err) {
+          setError(err.message || "Could not read file. Make sure it's a FollowPro backup.");
+        }
+      };
+
+      return (
+        <Modal onClose={onClose} title="Backup &amp; Restore">
+          {!mode && (
+            <div className="anim-up">
+              <div style={{background:`${C.orange}12`,border:`1px solid ${C.orange}30`,borderRadius:12,padding:"12px 14px",marginBottom:16,fontSize:12,color:C.text2,lineHeight:1.7}}>
+                ⚠️ Data lives <strong>only on this device</strong>. Clearing Chrome storage or reinstalling the app erases everything. <strong style={{color:C.orange}}>Export a backup regularly.</strong>
+              </div>
+
+              <button className="tap" onClick={()=>{ doExport(); setMode("export"); }}
+                style={{width:"100%",background:`linear-gradient(135deg,${C.accent},${C.accent2})`,color:"#fff",
+                  borderRadius:14,padding:"18px 16px",marginBottom:10,display:"flex",alignItems:"center",gap:14,border:"none",
+                  boxShadow:`0 4px 18px ${C.accent}40`}}>
+                <span style={{fontSize:28,flexShrink:0}}>📤</span>
+                <div style={{textAlign:"left"}}>
+                  <div style={{fontWeight:800,fontSize:15}}>Export Backup</div>
+                  <div style={{fontSize:11,opacity:0.85,marginTop:2}}>Downloads a JSON file with all your data</div>
+                </div>
+              </button>
+
+              <button className="tap" onClick={()=>setMode("import")}
+                style={{width:"100%",background:C.card,color:C.text,
+                  border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",
+                  display:"flex",alignItems:"center",gap:14}}>
+                <span style={{fontSize:28,flexShrink:0}}>📥</span>
+                <div style={{textAlign:"left"}}>
+                  <div style={{fontWeight:800,fontSize:15}}>Restore from Backup</div>
+                  <div style={{fontSize:11,color:C.text3,marginTop:2}}>Import a previously exported backup file</div>
+                </div>
+              </button>
+
+              <div style={{marginTop:14,padding:"10px 12px",background:C.surface,borderRadius:10,fontSize:11,color:C.text3,lineHeight:1.7}}>
+                💡 <strong style={{color:C.text2}}>Tip:</strong> Save your backup to Google Drive or WhatsApp Saved Messages so it's always accessible.
+              </div>
+            </div>
+          )}
+
+          {mode==="export" && (
+            <div className="anim-up" style={{textAlign:"center",padding:"20px 0"}}>
+              <div style={{fontSize:52,marginBottom:12}}>✅</div>
+              <div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Backup downloaded!</div>
+              <div style={{fontSize:12,color:C.text3,lineHeight:1.7,marginBottom:20}}>
+                Save this file to Google Drive, WhatsApp Saved Messages, or your email for safekeeping.
+              </div>
+              <button className="tap" onClick={()=>{ doExport(); }}
+                style={{background:`${C.accent}20`,color:C.accent2,border:`1px solid ${C.accent}40`,borderRadius:10,padding:"10px 20px",fontSize:13,fontWeight:700}}>
+                Download Again
+              </button>
+            </div>
+          )}
+
+          {mode==="import" && !preview && (
+            <div className="anim-up">
+              <button className="tap" onClick={()=>setMode("")}
+                style={{background:"none",color:C.text3,fontSize:12,marginBottom:14,padding:0,border:"none"}}>← Back</button>
+              <div style={{border:`2px dashed ${C.border2}`,borderRadius:14,padding:"32px 20px",textAlign:"center",cursor:"pointer",marginBottom:12}}
+                onClick={()=>fileRef.current.click()}>
+                <div style={{fontSize:42,marginBottom:10}}>📁</div>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>Tap to choose backup file</div>
+                <div style={{fontSize:11,color:C.text3}}>Select a followpro-backup-*.json file</div>
+                <input ref={fileRef} type="file" accept=".json,application/json" onChange={handleFile} style={{display:"none"}}/>
+              </div>
+              {error && (
+                <div style={{background:`${C.red}15`,border:`1px solid ${C.red}40`,borderRadius:10,padding:"10px 12px",fontSize:12,color:C.red}}>
+                  ⚠️ {error}
+                </div>
+              )}
+            </div>
+          )}
+
+          {preview && (
+            <div className="anim-up">
+              <div style={{background:`${C.green}15`,border:`1px solid ${C.green}40`,borderRadius:12,padding:"12px 14px",marginBottom:14}}>
+                <div style={{fontWeight:700,color:C.green,marginBottom:4}}>✅ Valid backup found</div>
+                <div style={{fontSize:12,color:C.text3,lineHeight:1.8}}>
+                  📋 {(preview.followups||[]).length} follow-ups<br/>
+                  👤 {(preview.callHistory||[]).length} contacts<br/>
+                  🗓️ Exported: {preview.exportedAt ? new Date(preview.exportedAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) : "Unknown"}
+                </div>
+              </div>
+              <div style={{background:`${C.orange}12`,border:`1px solid ${C.orange}30`,borderRadius:10,padding:"10px 12px",marginBottom:14,fontSize:12,color:C.orange}}>
+                ⚠️ This will <strong>replace</strong> your current data. Export first if you want to keep it.
+              </div>
+              <Btn label="📥 Restore This Backup" color={C.green} onClick={()=>onRestore(preview)}/>
+              <button className="tap" onClick={()=>setPreview(null)}
+                style={{background:"none",color:C.text3,fontSize:12,width:"100%",padding:"10px",border:"none",marginTop:4}}>
+                ← Choose different file
+              </button>
+            </div>
+          )}
+        </Modal>
       );
     }
 
@@ -1214,10 +1420,24 @@
 
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
-          .then(r => console.log('SW:', r.scope))
-          .catch(e => console.log('SW err:', e));
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('./sw.js');
+          console.log('[App] SW registered:', reg.scope);
+
+          // Force check for SW updates on every page load
+          reg.update();
+
+          // Register periodic background sync for notification checks (Chrome Android)
+          if('periodicSync' in reg) {
+            const status = await navigator.permissions.query({ name:'periodic-background-sync' });
+            if(status.state === 'granted') {
+              await reg.periodicSync.register('notificationcheck', { minInterval: 60 * 60 * 1000 }); // hourly
+            }
+          }
+        } catch(e) {
+          console.warn('[App] SW registration failed:', e);
+        }
       });
     }
   </script>
