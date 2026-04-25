@@ -190,7 +190,7 @@
       };
 
       const handleSave = data => {
-        // For manual entry: save contact if not already in list
+        // Persist contact for manual entry
         if(data.name && data.phone) {
           setCallHistory(prev =>
             prev.some(c=>c.phone===data.phone) ? prev :
@@ -199,26 +199,95 @@
                duration:0, type:"incoming" }, ...prev]
           );
         }
-        if(rescheduleId) {
-          setFollowups(p => p.map(f => f.id===rescheduleId ? {...f,...data,done:false,rescheduled:true} : f));
+        if(rescheduleId && data._editing) {
+          // Pure edit — update all fields in place, keep done status
+          setFollowups(p => p.map(f => f.id===rescheduleId ? {...f,...data,_editing:undefined} : f));
+          showToast("Updated ✓");
+        } else if(rescheduleId) {
+          // Done + Reschedule — create new follow-up
+          setFollowups(p => p.map(f => f.id===rescheduleId ? {...f,done:true} : f));
+          setFollowups(p => [...p, {...data, id:Date.now(), done:false, createdAt:new Date().toISOString()}]);
           showToast("Rescheduled ✓");
-          setRescheduleId(null);
         } else {
           setFollowups(p => [...p, {...data, id:Date.now(), done:false, createdAt:new Date().toISOString()}]);
           showToast("Follow-up scheduled! 🎯");
         }
+        setRescheduleId(null);
         setShowForm(false);
         setPrefill(null);
       };
 
 
+      // ── Notifications: request permission + schedule reminders ──
+      useEffect(() => {
+        if(!("Notification" in window) || !("serviceWorker" in navigator)) return;
+        // Request permission silently on first pending follow-up
+        if(pendingTotal > 0 && Notification.permission === "default") {
+          Notification.requestPermission();
+        }
+      }, [pendingTotal]);
+
+      useEffect(() => {
+        if(Notification.permission !== "granted") return;
+        // Schedule a notification for each today/overdue follow-up that has a time set
+        const now = new Date();
+        const today = todayStr();
+        followups.forEach(f => {
+          if(f.done || !f.scheduleTime) return;
+          if(f.scheduleDate !== today) return;
+          const [h,m] = f.scheduleTime.split(":").map(Number);
+          const notifTime = new Date(); notifTime.setHours(h,m,0,0);
+          const delay = notifTime - now;
+          if(delay < 0 || delay > 86400000) return;
+          // Schedule via setTimeout → SW push (best effort for PWA)
+          setTimeout(() => {
+            if(Notification.permission === "granted") {
+              navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification(`📞 Follow up: ${f.name}`, {
+                  body: `${f.interested ? f.interested + " · " : ""}${f.note || "Time to follow up!"}`,
+                  icon: "./icons/icon-192.png",
+                  badge: "./icons/icon-192.png",
+                  tag: `fu-${f.id}`,
+                  renotify: true,
+                  data: { url: "./" },
+                  actions: [
+                    { action:"call",  title:"📞 Call" },
+                    { action:"done",  title:"✅ Done" },
+                  ],
+                });
+              });
+            }
+          }, delay);
+        });
+      }, [followups]);
+
+      // ── Notification permission request button (shown in header) ──
+      const [notifDenied, setNotifDenied] = useState(false);
+      const requestNotif = async () => {
+        const perm = await Notification.requestPermission();
+        if(perm === "denied") setNotifDenied(true);
+        else showToast(perm === "granted" ? "Reminders enabled 🔔" : "Permission dismissed");
+      };
+
       const clearCallHistory = () => {
         setCallHistory([]);
-        showToast("Call history cleared","err");
+        showToast("Contacts cleared","err");
+      };
+
+      const renameContact = (id, newName) => {
+        setCallHistory(prev => prev.map(c => c.id===id ? {...c, name:newName} : c));
+        showToast("Name updated ✓");
       };
 
       const markDone = id => { setFollowups(p=>p.map(f=>f.id===id?{...f,done:true,doneAt:new Date().toISOString()}:f)); setSelectedFU(null); showToast("Done ✓"); };
-      const markDoneReschedule = fu => { setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f)); setSelectedFU(null); setRescheduleId(fu.id); setPrefill(null); setShowForm(true); };
+      const markDoneReschedule = fu => {
+        setFollowups(p=>p.map(f=>f.id===fu.id?{...f,done:true}:f));
+        setSelectedFU(null);
+        setRescheduleId(fu.id);
+        // Prefill contact so form opens directly at step 1 (schedule details)
+        setPrefill({ name:fu.name, phone:fu.phone, location:fu.location||"", lastCalled:fu.scheduleDate, interested:fu.interested||"", priority:fu.priority||"Medium", note:fu.note||"" });
+        setShowForm(true);
+      };
       const deleteFU = id => { setFollowups(p=>p.filter(f=>f.id!==id)); setSelectedFU(null); showToast("Deleted","err"); };
 
       const today = todayStr();
@@ -256,15 +325,24 @@
               </div>
             </div>
             {pendingTotal>0 && (
-              <div style={{background:`${C.red}22`,border:`1px solid ${C.red}40`,borderRadius:8,padding:"4px 9px",fontSize:11,color:C.red,fontWeight:700}}>
-                {pendingTotal} pending
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                {"Notification" in window && Notification.permission !== "granted" && !notifDenied && (
+                  <button className="tap" onClick={requestNotif}
+                    style={{background:`${C.orange}20`,border:`1px solid ${C.orange}40`,color:C.orange,
+                      borderRadius:8,padding:"4px 9px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                    🔔 Reminders
+                  </button>
+                )}
+                <div style={{background:`${C.red}22`,border:`1px solid ${C.red}40`,borderRadius:8,padding:"4px 9px",fontSize:11,color:C.red,fontWeight:700}}>
+                  {pendingTotal} pending
+                </div>
               </div>
             )}
           </div>
 
           {/* ── Main content ── */}
           <div style={{flex:1,overflowY:"auto",paddingBottom:76}}>
-            {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall}/>}
+            {tab==="calls"    && <CallsView callHistory={callHistory} followups={followups} onSchedule={openFormFromCall} onRenameContact={renameContact}/>}
             {tab==="schedule" && <ScheduleView followups={followups} today={today} onSelect={setSelectedFU} counts={counts}/>}
             {tab==="calendar" && <CalendarView followups={followups} today={today} onSelectFU={setSelectedFU}/>}
             {tab==="settings" && <SettingsView settings={settings} setSettings={setSettings} followups={followups} callHistory={callHistory} showToast={showToast} onClearCalls={clearCallHistory}/>}
@@ -274,7 +352,16 @@
           <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:520,zIndex:80}} className="tab-bar">
             {TABS.map(t => (
               <button key={t.id} className={`tab-btn${tab===t.id?" active":""}`} onClick={()=>setTab(t.id)}>
-                <span style={{fontSize:20,lineHeight:1}}>{t.emoji}</span>
+                <div style={{position:"relative",display:"inline-flex"}}>
+                  <span style={{fontSize:20,lineHeight:1}}>{t.emoji}</span>
+                  {t.id==="schedule" && pendingTotal>0 && (
+                    <span style={{position:"absolute",top:-4,right:-6,background:C.red,color:"#fff",
+                      borderRadius:8,fontSize:9,fontWeight:800,padding:"1px 4px",minWidth:14,textAlign:"center",
+                      lineHeight:"14px",border:`1.5px solid ${C.bg}`}}>
+                      {pendingTotal>9?"9+":pendingTotal}
+                    </span>
+                  )}
+                </div>
                 <span style={{fontSize:9,fontWeight:700,letterSpacing:"0.4px",textTransform:"uppercase",color:tab===t.id?C.accent:C.text3}}>{t.label}</span>
               </button>
             ))}
@@ -303,7 +390,9 @@
           )}
           {selectedFU && !selectedFU._multi && (
             <FUDetail fu={selectedFU} onClose={()=>setSelectedFU(null)}
-              onDone={()=>markDone(selectedFU.id)} onReschedule={()=>markDoneReschedule(selectedFU)}
+              onDone={()=>markDone(selectedFU.id)}
+              onReschedule={()=>markDoneReschedule(selectedFU)}
+              onEdit={()=>{ setPrefill({...selectedFU, _editing:true}); setRescheduleId(selectedFU.id); setSelectedFU(null); setShowForm(true); }}
               onDelete={()=>deleteFU(selectedFU.id)}/>
           )}
           {selectedFU?._multi && (
@@ -332,9 +421,11 @@
     // ═══════════════════════════════════════════════════════════════════
     // CALLS VIEW  — Contact Picker + Share Target + Saved Contacts
     // ═══════════════════════════════════════════════════════════════════
-    function CallsView({ callHistory, followups, onSchedule }) {
+    function CallsView({ callHistory, followups, onSchedule, onRenameContact }) {
       const [search, setSearch]       = useState("");
       const [pickerErr, setPickerErr] = useState("");
+      const [editingId, setEditingId] = useState(null);
+      const [editName, setEditName]   = useState("");
       const hasFollowup = phone => followups.some(f=>f.phone===phone&&!f.done);
 
       // callHistory here = contacts saved by user (from picker / manual)
@@ -417,26 +508,61 @@
                 {filtered.length===0
                   ? <div style={{textAlign:"center",padding:20,fontSize:12,color:C.text3}}>No contacts match</div>
                   : filtered.map((c,i)=>(
-                    <div key={c.id} style={{display:"flex",alignItems:"center",padding:"12px 14px",
-                      borderBottom:i===filtered.length-1?"none":`1px solid ${C.border}`,
-                      background:i%2===0?"transparent":`${C.surface}60`}}>
-                      <div style={{width:44,height:44,borderRadius:13,
-                        background:`linear-gradient(135deg,${C.accent}30,${C.purple}20)`,
-                        display:"flex",alignItems:"center",justifyContent:"center",
-                        fontSize:18,fontWeight:800,color:C.accent2,flexShrink:0,marginRight:12}}>
-                        {c.name==="Unknown"?"👤":c.name[0].toUpperCase()}
+                    <div key={c.id} style={{borderBottom:i===filtered.length-1?"none":`1px solid ${C.border}`}}>
+                      {/* Contact row */}
+                      <div style={{display:"flex",alignItems:"center",padding:"12px 14px 8px"}}>
+                        <div style={{width:44,height:44,borderRadius:13,
+                          background:`linear-gradient(135deg,${C.accent}30,${C.purple}20)`,
+                          display:"flex",alignItems:"center",justifyContent:"center",
+                          fontSize:18,fontWeight:800,color:C.accent2,flexShrink:0,marginRight:12}}>
+                          {c.name==="Unknown"?"👤":c.name[0].toUpperCase()}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          {editingId===c.id ? (
+                            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                              <input value={editName} onChange={e=>setEditName(e.target.value)}
+                                autoFocus onKeyDown={e=>{
+                                  if(e.key==="Enter"&&editName.trim()){onRenameContact(c.id,editName.trim());setEditingId(null);}
+                                  if(e.key==="Escape") setEditingId(null);
+                                }}
+                                style={{...IS,flex:1,fontSize:13,padding:"5px 8px"}}/>
+                              <button className="tap" onClick={()=>{if(editName.trim()){onRenameContact(c.id,editName.trim());setEditingId(null);}}}
+                                style={{background:C.green,color:"#fff",borderRadius:7,padding:"5px 9px",fontSize:11,fontWeight:700,border:"none",flexShrink:0}}>✓</button>
+                              <button className="tap" onClick={()=>setEditingId(null)}
+                                style={{background:C.card2,color:C.text3,borderRadius:7,padding:"5px 8px",fontSize:11,border:`1px solid ${C.border}`,flexShrink:0}}>✕</button>
+                            </div>
+                          ) : (
+                            <div style={{display:"flex",alignItems:"center",gap:6}}>
+                              <div style={{fontWeight:700,fontSize:14,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>
+                              <button className="tap" onClick={()=>{setEditingId(c.id);setEditName(c.name==="Unknown"?"":c.name);}}
+                                style={{background:"none",border:"none",color:C.text3,fontSize:12,padding:"2px 4px",flexShrink:0}}>✏️</button>
+                            </div>
+                          )}
+                          <div style={{fontSize:11,color:C.text3,marginTop:1}}>📱 {c.phone}</div>
+                        </div>
+                        <button className="tap" onClick={()=>onSchedule(c)}
+                          style={{background:hasFollowup(c.phone)?`${C.green}18`:`${C.accent}18`,
+                            color:hasFollowup(c.phone)?C.green:C.accent2,
+                            border:`1px solid ${hasFollowup(c.phone)?C.green+"50":C.accent+"50"}`,
+                            borderRadius:10,padding:"7px 11px",fontSize:11,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+                          {hasFollowup(c.phone)?"📅 Again":"📅 Follow"}
+                        </button>
                       </div>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontWeight:700,fontSize:14,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>
-                        <div style={{fontSize:11,color:C.text3,marginTop:1}}>📱 {c.phone}</div>
+                      {/* Quick action buttons */}
+                      <div style={{display:"flex",gap:8,padding:"0 14px 11px",marginLeft:56}}>
+                        <a href={`tel:${c.phone}`} className="tap"
+                          style={{flex:1,background:`${C.accent}15`,color:C.accent2,border:`1px solid ${C.accent}35`,
+                            borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
+                            textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                          📞 Call
+                        </a>
+                        <a href={`https://wa.me/91${c.phone}`} target="_blank" rel="noreferrer" className="tap"
+                          style={{flex:1,background:`${C.wa}15`,color:C.wa,border:`1px solid ${C.wa}40`,
+                            borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
+                            textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                          💬 WhatsApp
+                        </a>
                       </div>
-                      <button className="tap" onClick={()=>onSchedule(c)}
-                        style={{background:hasFollowup(c.phone)?`${C.green}18`:`${C.accent}18`,
-                          color:hasFollowup(c.phone)?C.green:C.accent2,
-                          border:`1px solid ${hasFollowup(c.phone)?C.green+"50":C.accent+"50"}`,
-                          borderRadius:10,padding:"8px 13px",fontSize:11,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
-                        {hasFollowup(c.phone)?"📅 Again":"📅 Follow"}
-                      </button>
                     </div>
                   ))
                 }
@@ -537,25 +663,43 @@
       const bc = f.done?C.border:isOverdue?C.red:isToday?C.orange:C.accent;
       const label = f.done?"Done ✓":isOverdue?"Overdue":isToday?"Today":relTime(f.scheduleDate);
       return (
-        <div className="anim-up tap" onClick={onClick}
-          style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${bc}`,
-            borderRadius:14,padding:"13px 14px",cursor:"pointer",opacity:f.done?0.5:1}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{f.name}</div>
-              <div style={{fontSize:11,color:C.text3}}>📱 {f.phone}</div>
+        <div className="anim-up" style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${bc}`,borderRadius:14,opacity:f.done?0.5:1}}>
+          <div className="tap" onClick={onClick} style={{padding:"13px 14px 10px",cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{f.name}</div>
+                <div style={{fontSize:11,color:C.text3}}>📱 {f.phone}</div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0,marginLeft:10}}>
+                <span style={{fontSize:11,fontWeight:700,color:bc,background:`${bc}20`,borderRadius:6,padding:"3px 9px"}}>{label}</span>
+                {f.scheduleTime && <div style={{fontSize:10,color:C.text3,marginTop:3}}>⏰ {fmtT(f.scheduleTime)}</div>}
+                {f.priority && <div style={{fontSize:10,marginTop:3,color:f.priority==="High"?C.red:f.priority==="Medium"?C.orange:C.green,fontWeight:700}}>● {f.priority}</div>}
+              </div>
             </div>
-            <div style={{textAlign:"right",flexShrink:0,marginLeft:10}}>
-              <span style={{fontSize:11,fontWeight:700,color:bc,background:`${bc}20`,borderRadius:6,padding:"3px 9px"}}>{label}</span>
-              {f.scheduleTime && <div style={{fontSize:10,color:C.text3,marginTop:3}}>⏰ {fmtT(f.scheduleTime)}</div>}
-              {f.priority && <div style={{fontSize:10,marginTop:3,color:f.priority==="High"?C.red:f.priority==="Medium"?C.orange:C.green,fontWeight:700}}>● {f.priority}</div>}
+            <div style={{display:"flex",gap:5,marginTop:8,flexWrap:"wrap"}}>
+              {f.location   && <Chip i="📍" t={f.location}/>}
+              {f.interested && <Chip i="🏷️" t={f.interested} accent/>}
             </div>
+            {f.note && <div style={{marginTop:8,fontSize:11,color:C.text2,background:C.surface,borderRadius:8,padding:"6px 10px",borderLeft:`2px solid ${C.border2}`}}>💬 {f.note.length>90?f.note.slice(0,90)+"…":f.note}</div>}
           </div>
-          <div style={{display:"flex",gap:5,marginTop:8,flexWrap:"wrap"}}>
-            {f.location  && <Chip i="📍" t={f.location}/>}
-            {f.interested && <Chip i="🏷️" t={f.interested} accent/>}
-          </div>
-          {f.note && <div style={{marginTop:8,fontSize:11,color:C.text2,background:C.surface,borderRadius:8,padding:"6px 10px",borderLeft:`2px solid ${C.border2}`}}>💬 {f.note.length>90?f.note.slice(0,90)+"…":f.note}</div>}
+          {/* Quick actions — only for pending */}
+          {!f.done && (
+            <div style={{display:"flex",gap:8,padding:"0 12px 11px"}}>
+              <a href={`tel:${f.phone}`} className="tap"
+                style={{flex:1,background:`${C.accent}15`,color:C.accent2,border:`1px solid ${C.accent}35`,
+                  borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
+                  textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                📞 Call
+              </a>
+              <a href={`https://wa.me/91${f.phone}?text=Hi ${encodeURIComponent(f.name)}, following up regarding ${encodeURIComponent(f.interested||"our discussion")}.`}
+                target="_blank" rel="noreferrer" className="tap"
+                style={{flex:1,background:`${C.wa}15`,color:C.wa,border:`1px solid ${C.wa}35`,
+                  borderRadius:8,padding:"7px 0",textAlign:"center",fontSize:12,fontWeight:700,
+                  textDecoration:"none",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                💬 WhatsApp
+              </a>
+            </div>
+          )}
         </div>
       );
     }
@@ -639,11 +783,16 @@
       const [pickerErr, setPickerErr] = useState("");
       const [savedSearch, setSavedSearch] = useState("");
       const [form, setForm] = useState({
-        name:      prefill?.name      || "",
-        phone:     prefill?.phone     || "",
-        lastCalled:prefill?.lastCalled|| "",
-        location:  prefill?.location  || "",
-        interested:"", note:"", scheduleDate:"", scheduleTime:"", priority:"Medium",
+        name:        prefill?.name        || "",
+        phone:       prefill?.phone       || "",
+        lastCalled:  prefill?.lastCalled  || "",
+        location:    prefill?.location    || "",
+        interested:  prefill?.interested  || "",
+        priority:    prefill?.priority    || "Medium",
+        note:        prefill?.note        || "",
+        scheduleDate:prefill?.scheduleDate|| "",
+        scheduleTime:prefill?.scheduleTime|| "",
+        _editing:    prefill?._editing    || false,
       });
       const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
@@ -687,7 +836,7 @@
       );
 
       return (
-        <Modal onClose={onClose} title={isReschedule?"Reschedule":step===0?"Pick Contact":"Schedule Details"}>
+        <Modal onClose={onClose} title={isReschedule&&form._editing?"✏️ Edit Follow-up":isReschedule?"Reschedule":step===0?"Pick Contact":"Schedule Details"}>
 
           {/* ── STEP 0: Pick Contact ── */}
           {step===0 && (
@@ -825,7 +974,7 @@
                   rows={3} style={{...IS,resize:"none",lineHeight:1.6}}/>
               </FL>
 
-              <Btn label={isReschedule?"🔄 Reschedule":"💾 Save Follow-up"} color={C.accent} disabled={!form.scheduleDate} onClick={handleSubmit}/>
+              <Btn label={form._editing?"💾 Save Changes":isReschedule?"🔄 Reschedule":"💾 Save Follow-up"} color={C.accent} disabled={!form.scheduleDate} onClick={handleSubmit}/>
             </div>
           )}
         </Modal>
@@ -833,7 +982,7 @@
     }
 
     // ─── FU Detail ───────────────────────────────────────────────────────
-    function FUDetail({ fu:f, onClose, onDone, onReschedule, onDelete }) {
+    function FUDetail({ fu:f, onClose, onDone, onReschedule, onEdit, onDelete }) {
       const [confirmDel, setConfirmDel] = useState(false);
       return (
         <Modal onClose={onClose} title="Follow-up Details">
@@ -842,10 +991,15 @@
               <div style={{width:50,height:50,borderRadius:14,background:`${C.accent}25`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:C.accent}}>
                 {f.name[0]}
               </div>
-              <div>
+              <div style={{flex:1,minWidth:0}}>
                 <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:20,fontWeight:800}}>{f.name}</div>
                 <div style={{fontSize:12,color:C.text3,marginTop:2}}>📱 {f.phone}</div>
               </div>
+              <button className="tap" onClick={onEdit}
+                style={{background:C.card2,border:`1px solid ${C.border}`,color:C.text2,
+                  borderRadius:9,padding:"7px 11px",fontSize:11,fontWeight:700,flexShrink:0}}>
+                ✏️ Edit
+              </button>
             </div>
             <div style={{display:"flex",gap:8}}>
               <a href={`tel:${f.phone}`} className="tap"
