@@ -235,7 +235,8 @@
       };
 
       const handleChange = (e) => {
-        const raw = e.target.value.toUpperCase().replace(/[^A-F0-9]/g,'').slice(0,16);
+        // Strip FP- prefix FIRST, then keep only hex chars
+        const raw = e.target.value.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'').slice(0,16);
         setKeyInput(formatInput(raw));
         setError("");
       };
@@ -295,7 +296,7 @@
                 <input
                   value={keyInput || "FP-"}
                   onChange={handleChange}
-                  onFocus={e=>{ if(!keyInput) setKeyInput("FP-"); }}
+                  onFocus={e=>{ if(!keyInput || keyInput==="FP-") setKeyInput("FP-"); }}
                   placeholder="FP-XXXX-XXXX-XXXX-XXXX"
                   maxLength={22}
                   disabled={isLocked}
@@ -323,7 +324,7 @@
 
               <div style={{textAlign:"center",fontSize:11,color:C.text3,lineHeight:1.8}}>
                 Don't have a key? Contact us on WhatsApp<br/>
-                <a href="https://wa.me/918885516160?text=I want to buy FollowPro" target="_blank"
+                <a href="https://wa.me/919999999999?text=I want to buy FollowPro" target="_blank"
                   style={{color:C.wa,fontWeight:700,textDecoration:"none"}}>
                   💬 Chat to purchase →
                 </a>
