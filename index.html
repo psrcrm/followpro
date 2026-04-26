@@ -166,9 +166,13 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // LICENCE ENGINE — offline HMAC-style key validation
-    // Keys: FP-XXXX-XXXX-XXXX  (16 hex chars = 4-4-4-4)
-    // Encodes: year + customer-seed, validated by secret constants
+    // LICENCE ENGINE v2 — phone-number-bound keys
+    // Key structure: FP-PPPP-CCCC-YYYY-SSSS  (16 hex chars)
+    //   PPPP = phone hash (last 10-digit mobile, hashed)
+    //   CCCC = checksum  (validates PPPP+YYYY+SSSS)
+    //   YYYY = year encoded (yearOffset XOR seed&0xFF)
+    //   SSSS = seed      (unique per customer, 1–9999)
+    // A key only activates when the correct phone number is entered.
     // ═══════════════════════════════════════════════════════════════════
     const LIC = {
       SECRET: [0x46,0x50,0x52,0x4F,0x53,0x45,0x43,0x52,0x45,0x54,0x4B,0x45,0x59,0x21,0x40,0x23],
@@ -189,23 +193,41 @@
       return (h ^ (h >>> 16)) >>> 0;
     };
 
-    const validateLicence = (raw) => {
+    // Normalise phone: keep last 10 digits only
+    const normalisePhone = (ph) => String(ph).replace(/\D/g,'').slice(-10);
+
+    // Validate key + phone together
+    const validateLicence = (raw, phone) => {
       if(!raw) return {valid:false};
       const key = raw.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
       if(key.length !== 16) return {valid:false};
-      const payloadHex = key.slice(0,4);
-      const checkHex   = key.slice(4,8);
-      const yearHex    = key.slice(8,12);
-      const seedHex    = key.slice(12,16);
+
+      const phoneHex = key.slice(0,4);
+      const checkHex = key.slice(4,8);
+      const yearHex  = key.slice(8,12);
+      const seedHex  = key.slice(12,16);
+
       const checkVal      = parseInt(checkHex, 16);
       const seed          = parseInt(seedHex,  16);
       const yearEnc       = parseInt(yearHex,  16);
-      const expectedCheck = licHash(payloadHex + yearHex + seedHex) & 0xFFFF;
+
+      // 1. Verify checksum
+      const expectedCheck = licHash(phoneHex + yearHex + seedHex) & 0xFFFF;
       if(checkVal !== expectedCheck) return {valid:false};
+
+      // 2. Verify phone matches key (if phone provided)
+      if(phone) {
+        const ph = normalisePhone(phone);
+        if(ph.length < 10) return {valid:false, wrongPhone:true};
+        const expectedPhoneHex = (licHash(ph) & 0xFFFF).toString(16).padStart(4,'0').toUpperCase();
+        if(phoneHex !== expectedPhoneHex) return {valid:false, wrongPhone:true};
+      }
+
+      // 3. Check expiry
       const yearOffset  = (yearEnc ^ (seed & 0xFF)) & 0xFF;
       const expiresYear = LIC.YEAR_BASE + yearOffset;
-      const currentYear = new Date().getFullYear();
-      if(currentYear > expiresYear) return {valid:false, expired:true, expiresYear};
+      if(new Date().getFullYear() > expiresYear) return {valid:false, expired:true, expiresYear};
+
       return {valid:true, expiresYear, seed};
     };
 
@@ -219,23 +241,22 @@
     // LICENCE GATE — shown before App if not activated
     // ═══════════════════════════════════════════════════════════════════
     function LicenceGate({ onActivate }) {
-      const [keyInput, setKeyInput] = useState("");
-      const [error,    setError]    = useState("");
-      const [success,  setSuccess]  = useState(false);
-      const [attempts, setAttempts] = useState(() => load("fp_lic_attempts", {count:0, lockedUntil:0}));
+      const [keyInput,   setKeyInput]   = useState("");
+      const [phoneInput, setPhoneInput] = useState("");
+      const [error,      setError]      = useState("");
+      const [success,    setSuccess]    = useState(false);
+      const [attempts,   setAttempts]   = useState(() => load("fp_lic_attempts", {count:0, lockedUntil:0}));
 
       const isLocked = attempts.lockedUntil > Date.now();
       const lockMins = Math.ceil((attempts.lockedUntil - Date.now()) / 60000);
 
       const formatInput = (val) => {
-        // Auto-format as FP-XXXX-XXXX-XXXX-XXXX
-        const clean = val.toUpperCase().replace(/[^A-F0-9]/g,'').slice(0,16);
-        const parts = [clean.slice(0,4), clean.slice(4,8), clean.slice(8,12), clean.slice(12,16)].filter(Boolean);
+        const clean = val.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'').slice(0,16);
+        const parts = [clean.slice(0,4),clean.slice(4,8),clean.slice(8,12),clean.slice(12,16)].filter(Boolean);
         return 'FP-' + parts.join('-');
       };
 
       const handleChange = (e) => {
-        // Strip FP- prefix FIRST, then keep only hex chars
         const raw = e.target.value.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'').slice(0,16);
         setKeyInput(formatInput(raw));
         setError("");
@@ -243,38 +264,43 @@
 
       const handleActivate = () => {
         if(isLocked) return;
-        const raw = keyInput.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
-        const result = validateLicence(raw);
+        const rawKey   = keyInput.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
+        const rawPhone = phoneInput.replace(/\D/g,'').slice(-10);
+        if(rawKey.length < 16)  { setError("Enter your complete licence key."); return; }
+        if(rawPhone.length < 10){ setError("Enter your 10-digit mobile number."); return; }
+
+        const result = validateLicence(rawKey, rawPhone);
 
         if(!result.valid) {
-          const newCount = attempts.count + 1;
-          const locked   = newCount >= 3 ? Date.now() + 3600000 : 0; // 1hr lockout after 3 fails
-          const newAttempts = {count: locked ? 0 : newCount, lockedUntil: locked};
-          setAttempts(newAttempts);
-          save("fp_lic_attempts", newAttempts);
-
-          if(result.expired) {
-            setError(`Licence expired in ${result.expiresYear}. Contact support to renew.`);
-          } else if(locked) {
-            setError("Too many wrong attempts. Try again in 1 hour.");
+          // Only count lockout attempts for wrong key, not wrong phone
+          if(!result.wrongPhone) {
+            const newCount    = attempts.count + 1;
+            const locked      = newCount >= 3 ? Date.now() + 3600000 : 0;
+            const newAttempts = {count: locked ? 0 : newCount, lockedUntil: locked};
+            setAttempts(newAttempts);
+            save("fp_lic_attempts", newAttempts);
+            if(locked) { setError("Too many wrong attempts. Try again in 1 hour."); return; }
+            setError(`Invalid key. ${3 - newCount} attempt${3-newCount===1?'':'s'} left.`);
+          } else if(result.expired) {
+            setError(`Key expired in ${result.expiresYear}. Contact us to renew.`);
           } else {
-            setError(`Invalid key (${3 - newCount} attempt${3-newCount===1?'':'s'} left).`);
+            setError("Mobile number doesn't match this key. Enter the number you used to purchase.");
           }
           return;
         }
 
-        // Valid — save and unlock
-        const licData = { key: raw, activatedAt: new Date().toISOString(), expiresYear: result.expiresYear };
+        const licData = { key:rawKey, phone:rawPhone, activatedAt:new Date().toISOString(), expiresYear:result.expiresYear };
         saveLicence(licData);
         save("fp_lic_attempts", {count:0, lockedUntil:0});
         setSuccess(true);
         setTimeout(() => onActivate(licData), 1500);
       };
 
+      const keyReady   = keyInput.replace(/[^A-F0-9]/g,'').length >= 16;
+      const phoneReady = phoneInput.replace(/\D/g,'').length >= 10;
+
       return (
         <div style={{minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px",fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
-
-          {/* Logo */}
           <div style={{width:76,height:76,background:`linear-gradient(135deg,${C.accent},${C.accent2})`,borderRadius:22,display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,marginBottom:20,boxShadow:`0 0 48px ${C.accent}50`}}>📞</div>
           <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:26,fontWeight:800,marginBottom:4,color:C.text}}>FollowPro</div>
           <div style={{fontSize:11,color:C.text3,letterSpacing:"1.5px",fontWeight:700,marginBottom:36}}>SMART FOLLOW-UP MANAGER</div>
@@ -288,19 +314,29 @@
           ) : (
             <div style={{width:"100%",maxWidth:360}} className="anim-up">
               <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:18,padding:"24px 20px",marginBottom:14}}>
-                <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>Enter your licence key</div>
-                <div style={{fontSize:11,color:C.text3,marginBottom:16,lineHeight:1.6}}>
-                  You should have received this after purchase. Format: <span style={{color:C.accent2,fontFamily:"monospace"}}>FP-XXXX-XXXX-XXXX-XXXX</span>
+                <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:4}}>Activate FollowPro</div>
+                <div style={{fontSize:11,color:C.text3,marginBottom:20,lineHeight:1.6}}>
+                  Enter the mobile number you used to purchase, then your licence key.
                 </div>
 
+                {/* Phone */}
+                <div style={{fontSize:10,fontWeight:700,color:C.text3,letterSpacing:"0.6px",textTransform:"uppercase",marginBottom:6}}>Your Mobile Number</div>
+                <input type="tel" maxLength={10} value={phoneInput}
+                  onChange={e=>{ setPhoneInput(e.target.value.replace(/\D/g,'').slice(0,10)); setError(""); }}
+                  placeholder="e.g. 9876543210"
+                  disabled={isLocked}
+                  style={{width:"100%",background:C.card2,border:`1.5px solid ${error&&error.includes("Mobile")?C.red:phoneReady?C.green:C.border2}`,borderRadius:12,padding:"12px 14px",color:C.text,fontSize:16,fontFamily:"monospace",fontWeight:700,outline:"none",marginBottom:14,letterSpacing:"1px"}}
+                />
+
+                {/* Key */}
+                <div style={{fontSize:10,fontWeight:700,color:C.text3,letterSpacing:"0.6px",textTransform:"uppercase",marginBottom:6}}>Licence Key</div>
                 <input
                   value={keyInput || "FP-"}
                   onChange={handleChange}
-                  onFocus={e=>{ if(!keyInput || keyInput==="FP-") setKeyInput("FP-"); }}
+                  onFocus={e=>{ if(!keyInput||keyInput==="FP-") setKeyInput("FP-"); }}
                   placeholder="FP-XXXX-XXXX-XXXX-XXXX"
-                  maxLength={22}
-                  disabled={isLocked}
-                  style={{...{width:"100%",background:C.card2,border:`1.5px solid ${error?C.red:C.border2}`,borderRadius:12,padding:"13px 14px",color:C.text,fontSize:15,fontFamily:"monospace",fontWeight:700,letterSpacing:"2px",outline:"none",marginBottom:12}}}
+                  maxLength={22} disabled={isLocked}
+                  style={{width:"100%",background:C.card2,border:`1.5px solid ${error&&!error.includes("Mobile")?C.red:keyReady?C.green:C.border2}`,borderRadius:12,padding:"12px 14px",color:C.text,fontSize:14,fontFamily:"monospace",fontWeight:700,letterSpacing:"2px",outline:"none",marginBottom:12}}
                 />
 
                 {error && (
@@ -311,12 +347,12 @@
 
                 {isLocked ? (
                   <div style={{background:`${C.orange}15`,border:`1px solid ${C.orange}35`,borderRadius:12,padding:"13px",textAlign:"center",fontSize:13,color:C.orange,fontWeight:600}}>
-                    🔒 Locked for {lockMins} minute{lockMins===1?"":"s"}
+                    🔒 Too many attempts. Try again in {lockMins} min.
                   </div>
                 ) : (
-                  <button onClick={handleActivate}
-                    disabled={keyInput.replace(/[^A-F0-9]/g,'').length < 16}
-                    style={{width:"100%",background:`linear-gradient(135deg,${C.accent},${C.accent2})`,color:"#fff",borderRadius:12,padding:"14px",fontSize:15,fontWeight:800,border:"none",opacity:keyInput.replace(/[^A-F0-9]/g,'').length<16?0.4:1,boxShadow:`0 4px 20px ${C.accent}40`,cursor:"pointer"}}>
+                  <button onClick={handleActivate} disabled={!keyReady||!phoneReady}
+                    style={{width:"100%",background:`linear-gradient(135deg,${C.accent},${C.accent2})`,color:"#fff",borderRadius:12,padding:"14px",fontSize:15,fontWeight:800,border:"none",
+                      opacity:keyReady&&phoneReady?1:0.4,boxShadow:`0 4px 20px ${C.accent}40`,cursor:"pointer"}}>
                     Activate FollowPro
                   </button>
                 )}
@@ -325,9 +361,7 @@
               <div style={{textAlign:"center",fontSize:11,color:C.text3,lineHeight:1.8}}>
                 Don't have a key? Contact us on WhatsApp<br/>
                 <a href="https://wa.me/919999999999?text=I want to buy FollowPro" target="_blank"
-                  style={{color:C.wa,fontWeight:700,textDecoration:"none"}}>
-                  💬 Chat to purchase →
-                </a>
+                  style={{color:C.wa,fontWeight:700,textDecoration:"none"}}>💬 Chat to purchase →</a>
               </div>
             </div>
           )}
@@ -340,7 +374,7 @@
         const lic = getLicence();
         if(!lic) return null;
         const raw    = (lic.key||'').toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
-        const result = validateLicence(raw);
+        const result = validateLicence(raw, lic.phone || '');
         return result.valid ? lic : null;
       });
       if(!licence) return <LicenceGate onActivate={setLicence}/>;
