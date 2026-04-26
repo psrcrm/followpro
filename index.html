@@ -174,10 +174,8 @@
       SECRET: [0x46,0x50,0x52,0x4F,0x53,0x45,0x43,0x52,0x45,0x54,0x4B,0x45,0x59,0x21,0x40,0x23],
       SALT:   0xB7C3,
       YEAR_BASE: 2024,
-      MAX_YEARS: 10,
     };
 
-    // Simple deterministic hash (no crypto API needed — works offline)
     const licHash = (input) => {
       let h = LIC.SALT;
       const str = String(input);
@@ -186,43 +184,31 @@
         h ^= LIC.SECRET[i % LIC.SECRET.length];
         h = ((h << 5) | (h >>> 27)) >>> 0;
       }
-      // Mix with secret constants
       h = Math.imul(h ^ (h >>> 16), 0x45D9F3B) >>> 0;
       h = Math.imul(h ^ (h >>> 16), 0xB1E32BA) >>> 0;
       return (h ^ (h >>> 16)) >>> 0;
     };
 
-    // Validate a key string → {valid, expiresYear, seed} or {valid:false}
     const validateLicence = (raw) => {
       if(!raw) return {valid:false};
-      const key = raw.toUpperCase().replace(/[^A-F0-9]/g,'');
+      const key = raw.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
       if(key.length !== 16) return {valid:false};
-
-      // Split: [4 payload chars][4 check chars][4 year chars][4 seed chars]
       const payloadHex = key.slice(0,4);
       const checkHex   = key.slice(4,8);
       const yearHex    = key.slice(8,12);
       const seedHex    = key.slice(12,16);
-
-      const payload    = parseInt(payloadHex, 16);
-      const checkVal   = parseInt(checkHex,   16);
-      const yearEnc    = parseInt(yearHex,    16);
-      const seed       = parseInt(seedHex,    16);
-
-      // Verify check value
+      const checkVal      = parseInt(checkHex, 16);
+      const seed          = parseInt(seedHex,  16);
+      const yearEnc       = parseInt(yearHex,  16);
       const expectedCheck = licHash(payloadHex + yearHex + seedHex) & 0xFFFF;
       if(checkVal !== expectedCheck) return {valid:false};
-
-      // Decode year
-      const yearOffset = (yearEnc ^ (seed & 0xFF)) % (LIC.MAX_YEARS + 1);
+      const yearOffset  = (yearEnc ^ (seed & 0xFF)) & 0xFF;
       const expiresYear = LIC.YEAR_BASE + yearOffset;
       const currentYear = new Date().getFullYear();
       if(currentYear > expiresYear) return {valid:false, expired:true, expiresYear};
-
       return {valid:true, expiresYear, seed};
     };
 
-    // Format raw 16-hex key → FP-XXXX-XXXX-XXXX-XXXX
     const fmtKey = k => `FP-${k.slice(0,4)}-${k.slice(4,8)}-${k.slice(8,12)}-${k.slice(12,16)}`.toUpperCase();
 
     // Licence localStorage helpers
@@ -256,7 +242,7 @@
 
       const handleActivate = () => {
         if(isLocked) return;
-        const raw = keyInput.replace(/[^A-F0-9]/g,'');
+        const raw = keyInput.toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
         const result = validateLicence(raw);
 
         if(!result.valid) {
@@ -337,7 +323,7 @@
 
               <div style={{textAlign:"center",fontSize:11,color:C.text3,lineHeight:1.8}}>
                 Don't have a key? Contact us on WhatsApp<br/>
-                <a href="https://wa.me/918885516160?text=I want to buy FollowPro" target="_blank"
+                <a href="https://wa.me/919999999999?text=I want to buy FollowPro" target="_blank"
                   style={{color:C.wa,fontWeight:700,textDecoration:"none"}}>
                   💬 Chat to purchase →
                 </a>
@@ -352,7 +338,8 @@
       const [licence, setLicence] = useState(() => {
         const lic = getLicence();
         if(!lic) return null;
-        const result = validateLicence(lic.key);
+        const raw    = (lic.key||'').toUpperCase().replace(/^FP-?/,'').replace(/[^A-F0-9]/g,'');
+        const result = validateLicence(raw);
         return result.valid ? lic : null;
       });
       if(!licence) return <LicenceGate onActivate={setLicence}/>;
